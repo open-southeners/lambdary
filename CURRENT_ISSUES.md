@@ -15,3 +15,21 @@ Discovered during orchestrated work; routed here instead of fixed inline.
 - **Fix:** when the M3 process backend allocates per-function ephemeral ports,
   explicitly set both the invoke address and the internal runtime API address
   (or exclude 9001 from the allocation pool) so the two can never collide.
+
+## Image-digest lockfile not yet implemented (deferred from M1)
+
+- **Where:** future `.lambdary/lock` handling; decisions log in `DESIGN.md`.
+- **What:** the decisions log commits to pinning container image digests, RIC
+  versions, and the vendored RIE tag in `.lambdary/lock`. M1 pulls base
+  images by tag only.
+- **Fix:** after M1's pull/resolve flow settles, record resolved digests on
+  first pull and prefer digest pins on subsequent runs.
+
+## Dockerfile-marker functions not runnable yet (deferred from M1)
+
+- **Where:** `internal/backend/container` (M1); discovery already detects
+  `Dockerfile` markers.
+- **What:** functions whose marker is a `Dockerfile` need a `docker build`
+  step before `run`; M1 returns a "not yet supported" error for them.
+- **Fix:** add a build step (tag `lambdary/<function>`, rebuild on change
+  once M4 watching lands) and then treat the built tag as the run image.
