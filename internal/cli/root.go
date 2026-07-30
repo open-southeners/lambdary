@@ -24,6 +24,8 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&root, "root", ".", "functions root folder")
 
 	cmd.AddCommand(newListCmd())
+	cmd.AddCommand(newDevCmd())
+	cmd.AddCommand(newInvokeCmd())
 
 	return cmd
 }
