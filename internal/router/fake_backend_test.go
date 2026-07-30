@@ -107,6 +107,11 @@ type fakeInstance struct {
 	body        []byte
 	contentType string
 	sleep       time.Duration
+	// echo, when true, makes handle reply with the exact body it received
+	// instead of the fixed body field — used by router-route tests that
+	// need to inspect the JSON event the router actually sent, without a
+	// second server hop to capture it.
+	echo bool
 
 	active    int32
 	maxActive int32
@@ -118,6 +123,15 @@ type fakeInstance struct {
 
 func newFakeInstance(status int, body []byte, contentType string, sleep time.Duration) *fakeInstance {
 	fi := &fakeInstance{status: status, body: body, contentType: contentType, sleep: sleep}
+	fi.srv = httptest.NewServer(http.HandlerFunc(fi.handle))
+
+	return fi
+}
+
+// newEchoInstance returns a fakeInstance that replies to every invocation
+// with the exact request body it received, under status.
+func newEchoInstance(status int) *fakeInstance {
+	fi := &fakeInstance{status: status, echo: true}
 	fi.srv = httptest.NewServer(http.HandlerFunc(fi.handle))
 
 	return fi
@@ -151,11 +165,16 @@ func (fi *fakeInstance) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	respBody := fi.body
+	if fi.echo {
+		respBody = reqBody
+	}
+
 	if fi.contentType != "" {
 		w.Header().Set("Content-Type", fi.contentType)
 	}
 	w.WriteHeader(fi.status)
-	w.Write(fi.body) //nolint:errcheck // test double, best-effort write.
+	w.Write(respBody) //nolint:errcheck // test double, best-effort write.
 }
 
 func (fi *fakeInstance) InvokeURL() string { return fi.srv.URL }

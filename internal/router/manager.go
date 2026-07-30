@@ -1,9 +1,8 @@
-// Package router implements Lambdary's local HTTP server: lazy per-function
-// backend lifecycle (Manager) and the AWS-compatible invoke passthrough
-// (router.New), per DESIGN.md's "router" component and "Routing & event
-// mapping" section. HTTP↔event mapping (the `ANY /{route}/*` Function URL
-// shape) is M2 — this package only wires up discovery, on-demand backend
-// starts, and the raw invoke passthrough.
+// Package router implements Lambdary's local HTTP server, per DESIGN.md's
+// "router" component and "Routing & event mapping" section: lazy per-function
+// backend lifecycle (Manager), the AWS-compatible invoke passthrough, and
+// HTTP↔event mapping on function routes (the `ANY /{route}/*` Function URL
+// shape, via internal/event).
 package router
 
 import (

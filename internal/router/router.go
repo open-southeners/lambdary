@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/event"
 )
 
 // invokePrefix and invokeSuffix bracket the function name in the
@@ -23,10 +24,16 @@ const (
 	invokeSuffix = "/invocations"
 )
 
-// routeEventMessage is returned for a request that hits a function's route
-// but isn't the invoke passthrough — HTTP↔event mapping is M2, not
-// implemented here (see plans/m1-container-path.md).
-const routeEventMessage = "HTTP event mapping lands in M2 — invoke via POST /2015-03-31/functions/%s/invocations"
+// supportedPayload is the only Function URL / API Gateway event payload
+// format M2 implements — see plans/m2-http-events.md's scope decision. A
+// manifest that explicitly asks for a different format (in practice,
+// "1.0") gets a 501 naming the limitation rather than silently mismapping
+// its events.
+const supportedPayload = "2.0"
+
+// unsupportedPayloadMessage is the 501 body for a function route whose
+// manifest requests a payload format other than supportedPayload.
+const unsupportedPayloadMessage = "payload format %s is not yet supported — see CURRENT_ISSUES.md"
 
 // Router is the http.Handler router.New returns. It holds no global state:
 // every dependency (the Manager, the discovered functions) is injected by
@@ -46,8 +53,9 @@ type Router struct {
 }
 
 // New builds the http.Handler serving m's functions fns: the AWS-compatible
-// invoke passthrough, route-collision/name-collision fail-safes, the M2
-// placeholder for function routes, and a small discovery index at GET /.
+// invoke passthrough, HTTP↔event mapping for each function's own route,
+// route-collision/name-collision fail-safes, and a small discovery index at
+// GET /.
 //
 // Collisions (duplicate names, duplicate routes) are computed directly from
 // fns by grouping on Name and on Route, rather than by string-matching
@@ -81,7 +89,7 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if matched := matchRoute(rt.fns, path); len(matched) > 0 {
-		rt.handleRoute(w, matched)
+		rt.handleRoute(w, r, matched)
 		return
 	}
 
@@ -129,22 +137,40 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 
+	status, respBody, contentType, err := rt.invoke(r, name, body)
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	w.WriteHeader(status)
+	w.Write(respBody) //nolint:errcheck // best-effort; client disconnect leaves nothing to do about a write error here.
+}
+
+// invoke is the ensure/lock/POST/timeout plumbing shared by both ways a
+// request reaches a function's backend: the raw invoke passthrough
+// (handleInvoke, body forwarded verbatim) and a function-route hit
+// (handleRoute, body is a marshaled event.RequestV2). It resolves name to a
+// running instance (starting it on first use via Manager.Ensure), holds the
+// function's invoke lock for the duration of the request, and POSTs body to
+// the instance within name's InvokeTimeout. A non-nil error is always an
+// *invokeError, already tagging whether it stemmed from the deadline, so
+// writeUpstreamError can pick 502 vs 504 without needing ctx or timeout in
+// hand.
+func (rt *Router) invoke(r *http.Request, name string, body []byte) (status int, respBody []byte, contentType string, err error) {
 	timeout := rt.mgr.InvokeTimeout(name)
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
 	invokeURL, err := rt.mgr.Ensure(ctx, name)
 	if err != nil {
-		writeUpstreamError(w, ctx, timeout, err)
-		return
+		return 0, nil, "", newInvokeError(ctx, timeout, err)
 	}
 
-	var (
-		status      int
-		respBody    []byte
-		contentType string
-		invokeErr   error
-	)
+	var invokeErr error
 
 	// WithLock's fn always returns nil here; the invoke outcome is
 	// reported via the closed-over variables instead so a lock error
@@ -155,15 +181,10 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, name stri
 	})
 
 	if invokeErr != nil {
-		writeUpstreamError(w, ctx, timeout, invokeErr)
-		return
+		return 0, nil, "", newInvokeError(ctx, timeout, invokeErr)
 	}
 
-	if contentType != "" {
-		w.Header().Set("Content-Type", contentType)
-	}
-	w.WriteHeader(status)
-	w.Write(respBody) //nolint:errcheck // best-effort; client disconnect leaves nothing to do about a write error here.
+	return status, respBody, contentType, nil
 }
 
 // doInvoke POSTs body to invokeURL and returns the upstream response,
@@ -188,13 +209,33 @@ func doInvoke(ctx context.Context, invokeURL string, body []byte) (status int, r
 	return resp.StatusCode, respBody, resp.Header.Get("Content-Type"), nil
 }
 
-// writeUpstreamError reports err as 504 when it stems from ctx's deadline
-// (Ensure's start, or the invoke itself, ran out of time) and 502 for every
-// other backend/network failure.
-func writeUpstreamError(w http.ResponseWriter, ctx context.Context, timeout time.Duration, err error) {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+// invokeError wraps a backend/network failure from (*Router).invoke,
+// tagging whether it stemmed from the invoke's own deadline (Ensure's
+// start, or the invoke itself, ran out of time) so writeUpstreamError can
+// choose 504 vs 502 without needing ctx or timeout in hand.
+type invokeError struct {
+	timedOut bool
+	timeout  time.Duration
+	err      error
+}
+
+func newInvokeError(ctx context.Context, timeout time.Duration, err error) *invokeError {
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded)
+	return &invokeError{timedOut: timedOut, timeout: timeout, err: err}
+}
+
+func (e *invokeError) Error() string { return e.err.Error() }
+func (e *invokeError) Unwrap() error { return e.err }
+
+// writeUpstreamError reports err as 504 when it was a timeout and 502 for
+// every other backend/network failure — the same taxonomy for both the
+// invoke passthrough and a function-route hit, since both go through
+// (*Router).invoke.
+func writeUpstreamError(w http.ResponseWriter, err error) {
+	var ie *invokeError
+	if errors.As(err, &ie) && ie.timedOut {
 		writeJSON(w, http.StatusGatewayTimeout, map[string]any{
-			"message": fmt.Sprintf("invoke timed out after %s: %s", timeout, err),
+			"message": fmt.Sprintf("invoke timed out after %s: %s", ie.timeout, ie.err),
 		})
 		return
 	}
@@ -206,17 +247,123 @@ func writeUpstreamError(w http.ResponseWriter, ctx context.Context, timeout time
 
 // handleRoute serves a request matched to one or more functions' Route by
 // matchRoute. More than one match means those functions collide on that
-// route (409, naming competitors); exactly one means the route is valid
-// but HTTP↔event mapping isn't implemented yet (501).
-func (rt *Router) handleRoute(w http.ResponseWriter, matched []discovery.Function) {
+// route (409, naming competitors). Exactly one match is a genuine
+// function-route hit: build the Function URL v2 event for r, invoke the
+// function the same way the passthrough does (Ensure/lock/timeout, via
+// (*Router).invoke), then translate the raw invoke result back into an
+// HTTP response with event.ToHTTP.
+func (rt *Router) handleRoute(w http.ResponseWriter, r *http.Request, matched []discovery.Function) {
 	if len(matched) > 1 {
 		writeCollision(w, "route", matched[0].Route, matched)
 		return
 	}
 
-	writeJSON(w, http.StatusNotImplemented, map[string]any{
-		"message": fmt.Sprintf(routeEventMessage, matched[0].Name),
-	})
+	fn := matched[0]
+
+	if payload := payloadVersion(fn); payload != "" && payload != supportedPayload {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{
+			"message": fmt.Sprintf(unsupportedPayloadMessage, payload),
+		})
+		return
+	}
+
+	ev, err := event.FromHTTP(r, fn.Route)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"message": fmt.Sprintf("reading request body: %s", err),
+		})
+		return
+	}
+
+	body, err := json.Marshal(ev)
+	if err != nil {
+		// ev is built entirely from strings/bools this package controls;
+		// Marshal failing here would mean a bug in event.RequestV2 itself,
+		// not bad input, so this is a 500 rather than an upstream problem.
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"message": fmt.Sprintf("encoding request event: %s", err),
+		})
+		return
+	}
+
+	status, respBody, _, err := rt.invoke(r, fn.Name, body)
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+
+	if isFunctionError(status, respBody) {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"message": "function error",
+			"error":   errorPayload(respBody),
+		})
+		return
+	}
+
+	if err := event.ToHTTP(w, respBody); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"message": fmt.Sprintf("malformed function response: %s", err),
+		})
+	}
+}
+
+// payloadVersion returns fn's configured Function URL payload format
+// (Manifest.URL.Payload), or "" when fn has no manifest at all — treated
+// the same as an unset field, since both mean "use the default".
+func payloadVersion(fn discovery.Function) string {
+	if fn.Manifest == nil {
+		return ""
+	}
+
+	return fn.Manifest.URL.Payload
+}
+
+// isFunctionError reports whether an invoke's raw HTTP status/body
+// indicates the function handler itself failed, rather than the request
+// producing a normal (shaped or unshaped) return value. The Runtime
+// Interface Emulator signals a handler failure two different ways
+// depending on the invoke path: a non-2xx HTTP status, or HTTP 200 with a
+// JSON error envelope body and no statusCode field (see isErrorEnvelope) —
+// the latter is what distinguishes a genuine handler error from an
+// unshaped return value that merely happens to be a JSON object.
+func isFunctionError(status int, body []byte) bool {
+	if status < 200 || status > 299 {
+		return true
+	}
+
+	return isErrorEnvelope(body)
+}
+
+// isErrorEnvelope reports whether body is a JSON object carrying both
+// errorType and errorMessage but no statusCode — AWS Lambda's own handler
+// error envelope shape, as opposed to a shaped Function URL response
+// (which has statusCode) or an ordinary unshaped return value.
+func isErrorEnvelope(body []byte) bool {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		return false
+	}
+
+	if _, hasStatusCode := top["statusCode"]; hasStatusCode {
+		return false
+	}
+
+	_, hasType := top["errorType"]
+	_, hasMessage := top["errorMessage"]
+
+	return hasType && hasMessage
+}
+
+// errorPayload prepares an upstream function-error body for embedding in
+// the router's own 502 JSON envelope: raw JSON when body already is valid
+// JSON (the common case — the error envelope itself), a plain string
+// otherwise, so the 502 response stays valid JSON either way.
+func errorPayload(body []byte) any {
+	if json.Valid(body) {
+		return json.RawMessage(body)
+	}
+
+	return string(body)
 }
 
 // handleIndex serves GET /: a minimal discovery index plus a "server"
