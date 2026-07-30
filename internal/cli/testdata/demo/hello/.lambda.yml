@@ -1,2 +1,3 @@
 runtime: python3.13
 handler: lambda_function.lambda_handler
+timeout: 120

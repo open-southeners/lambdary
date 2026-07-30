@@ -53,3 +53,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   route, `lambdary` still starts and serves every other function normally;
   hitting the colliding function or route returns a `409` response naming
   every function competing for it.
+- Functions are now reachable as plain HTTP endpoints at their local route
+  (e.g. `GET /hello`), not just through the invoke passthrough: a request
+  arrives at the handler as an AWS Function URL / API Gateway v2 (`2.0`)
+  event, with headers, cookies, query strings, and binary bodies mapped in
+  both directions. Handlers can return either a plain value (serialized as
+  the JSON body, `200`) or a shaped response (`statusCode`, `headers`,
+  `cookies`, `isBase64Encoded`) for full control over the HTTP reply. A
+  function configured for the older `1.0` payload format isn't supported
+  yet — see `CURRENT_ISSUES.md`.
+
+### Changed
+
+- Function routes no longer answer with a `501` placeholder — they serve
+  real responses from the handler, per the HTTP event mapping above.

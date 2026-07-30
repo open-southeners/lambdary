@@ -118,15 +118,48 @@ func TestContainerBackendIntegration(t *testing.T) {
 	}
 	stopped = true
 
-	out, err := runner.Run(context.Background(), "docker", "ps", "-a",
-		"--filter", "label=lambdary=1",
-		"--filter", "label=lambdary.function="+fn.Name,
-		"--format", "{{.ID}}")
-	if err != nil {
-		t.Fatalf("docker ps unexpected error: %v", err)
+	waitForNoLabeledContainers(t, runner, fn.Name)
+}
+
+// waitForNoLabeledContainers polls
+// `docker ps -a --filter label=lambdary=1 --filter label=lambdary.function=<fnName>`
+// every 250ms until it reports no containers or a 10s deadline expires,
+// failing the test with the last output only in the latter case. A
+// container run with --rm (as ours are) is removed asynchronously after
+// `docker stop` returns, so an instant check right after Stop can still
+// briefly see it — polling avoids that flake instead of asserting on a
+// single point-in-time snapshot.
+func waitForNoLabeledContainers(t *testing.T, runner backend.ExecRunner, fnName string) {
+	t.Helper()
+
+	const (
+		pollInterval = 250 * time.Millisecond
+		pollTimeout  = 10 * time.Second
+	)
+
+	deadline := time.Now().Add(pollTimeout)
+
+	var last string
+	for {
+		out, err := runner.Run(context.Background(), "docker", "ps", "-a",
+			"--filter", "label=lambdary=1",
+			"--filter", "label=lambdary.function="+fnName,
+			"--format", "{{.ID}}")
+		if err != nil {
+			t.Fatalf("docker ps unexpected error: %v", err)
+		}
+
+		last = strings.TrimSpace(string(out))
+		if last == "" {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			break
+		}
+
+		time.Sleep(pollInterval)
 	}
 
-	if got := strings.TrimSpace(string(out)); got != "" {
-		t.Errorf("docker ps after Stop() = %q, want no containers left for label lambdary.function=%s", got, fn.Name)
-	}
+	t.Errorf("docker ps after Stop() = %q, want no containers left for label lambdary.function=%s", last, fnName)
 }
