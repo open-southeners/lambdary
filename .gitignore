@@ -1,0 +1,12 @@
+/lambdary
+.lambdary/
+
+# Go
+*.test
+*.out
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
