@@ -279,7 +279,10 @@ can come later if we need event streams.
   embedded in the `lambdary` binary — never reimplemented, never imported as
   a library (upstream keeps everything under `internal/`, so library
   embedding is impossible). A minimal in-house Runtime API server exists only
-  as a recorded fallback if darwin builds of upstream fail (M0 spike).
+  as a recorded fallback if darwin builds of upstream fail. **M0 spike
+  outcome: not needed** — RIE v1.35 builds with plain `go build` on
+  darwin/arm64 and passes an invoke round trip (see
+  `plans/rie-darwin-spike.md`).
 - **PHP / custom runtimes:** stay frameworkless. Anything declaring (or
   detected as) `provided.*` follows AWS's own custom-runtime contract — a
   `bootstrap` entrypoint in the function directory. Bref works because Bref
