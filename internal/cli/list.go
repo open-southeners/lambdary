@@ -3,19 +3,13 @@ package cli
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"github.com/open-southeners/lambdary/internal/discovery"
-	"github.com/open-southeners/lambdary/internal/manifest"
 )
-
-// configFileName is the project-wide config file lambdary looks for at the
-// --root directory, per DESIGN.md.
-const configFileName = "lambdary.yml"
 
 func newListCmd() *cobra.Command {
 	return &cobra.Command{
@@ -30,22 +24,9 @@ func newListCmd() *cobra.Command {
 // runList resolves the scan root and project config from root, runs
 // discovery, and renders the result to out/errOut.
 func runList(out, errOut io.Writer, root string) error {
-	scanRoot := root
-
-	cfgPath := filepath.Join(root, configFileName)
-
-	var cfg *manifest.Config
-
-	if _, err := os.Stat(cfgPath); err == nil {
-		loaded, err := manifest.LoadConfig(cfgPath)
-		if err != nil {
-			return err
-		}
-
-		cfg = loaded
-		scanRoot = filepath.Join(root, cfg.Root)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("list: %s: %w", cfgPath, err)
+	scanRoot, cfg, err := resolveRoot(root)
+	if err != nil {
+		return err
 	}
 
 	fns, err := discovery.Discover(scanRoot, cfg)
