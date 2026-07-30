@@ -1,0 +1,5 @@
+name: custom-name
+runtime: nodejs22.x
+handler: index.handler
+url:
+  path: /custom
