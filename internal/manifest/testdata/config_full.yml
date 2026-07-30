@@ -1,0 +1,17 @@
+port: 9000
+root: ./functions
+defaults:
+  runtime: nodejs22.x
+  handler: index.handler
+  timeout: 15
+  memory: 256
+  architectures: [arm64]
+  environment:
+    STAGE: local
+  url:
+    payload: "1.0"
+  local:
+    backend: container
+    image: my-default-image:latest
+    command: /usr/local/bin/node
+    env_file: .env.defaults

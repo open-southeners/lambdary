@@ -1,0 +1,16 @@
+name: function_a
+runtime: nodejs22.x
+handler: index.handler
+timeout: 30
+memory: 512
+architectures: [arm64]
+environment:
+  TABLE_NAME: local-table
+url:
+  path: /function_a
+  payload: "2.0"
+local:
+  backend: auto
+  image: my-custom-image:latest
+  command: /usr/local/bin/node
+  env_file: .env
