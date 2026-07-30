@@ -33,3 +33,11 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   step before `run`; M1 returns a "not yet supported" error for them.
 - **Fix:** add a build step (tag `lambdary/<function>`, rebuild on change
   once M4 watching lands) and then treat the built tag as the run image.
+
+## API Gateway v1 (`payload: "1.0"`) events not supported (deferred from M2)
+
+- **Where:** `internal/event` / `internal/router`; manifest `url.payload`.
+- **What:** M2 implements the Function URL / API Gateway v2 (`2.0`) event
+  format only; functions configured with `url.payload: "1.0"` get a 501.
+- **Fix:** add a v1 request/response mapper in `internal/event` selected by
+  the manifest payload field.
