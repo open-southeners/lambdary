@@ -41,3 +41,21 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   format only; functions configured with `url.payload: "1.0"` get a 501.
 - **Fix:** add a v1 request/response mapper in `internal/event` selected by
   the manifest payload field.
+
+## RIE binary not embedded in releases (deferred from M3)
+
+- **Where:** `internal/rie`; DESIGN.md "Process backend" (go:embed plan).
+- **What:** M3 acquires the RIE via env override → `~/.lambdary/bin` cache →
+  build-from-source at the pinned tag. Embedding the prebuilt binary in
+  `lambdary` releases needs a release pipeline that doesn't exist yet.
+- **Fix:** when release tooling lands (goreleaser or similar), build
+  `cmd/aws-lambda-rie` per target and embed via `go:embed` as acquisition
+  step 2, keeping the source build as last resort.
+
+## Process backend limited to Node, Python, and custom runtimes (M3)
+
+- **Where:** `internal/backend/process` runtime table.
+- **What:** other interpreted families (ruby, dotnet, java) have no shim;
+  PHP works only via the custom-runtime `bootstrap` convention.
+- **Fix:** add shims per family as demand appears; each is ~50 lines against
+  the frozen Runtime API.

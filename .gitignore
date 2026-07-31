@@ -10,3 +10,6 @@
 .idea/
 *.swp
 .DS_Store
+
+# Python bytecode caches from shim tests
+__pycache__/

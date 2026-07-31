@@ -185,11 +185,17 @@ binary built from pinned upstream source:
   use. Upgrading AWS's emulator = bumping the pinned tag; zero emulator code
   of our own to maintain.
 - Per function, Lambdary spawns one RIE subprocess on an ephemeral port; the
-  RIE itself spawns the runtime process (the language's official Runtime
-  Interface Client — `aws-lambda-ric` for Node, `awslambdaric` for Python, a
-  `bootstrap` file for custom runtimes) with `AWS_LAMBDA_RUNTIME_API` wired
-  up, exactly as in AWS's base images. RICs are vendored into a per-function
-  `.lambdary/` cache on first run.
+  RIE itself spawns the runtime process with `AWS_LAMBDA_RUNTIME_API` wired
+  up, exactly as in AWS's base images.
+- *(Amended in M3.)* The runtime process is a tiny dependency-free **shim**
+  per language family (Node, Python) that speaks the versioned Runtime API
+  and loads the handler — not the official RICs as originally written:
+  `aws-lambda-ric`/`awslambdaric` both carry native C/C++ components that
+  would require per-function compile toolchains, exactly the friction this
+  project exists to remove. The Runtime API is small and frozen, so the shim
+  surface is ~50 lines per language. Custom runtimes (`provided.*`) run the
+  function's own `bootstrap` directly; `local.command` overrides everything
+  when a project wants the real RIC or anything else.
 - **M0 spike (required):** verify the pinned RIE tag cross-compiles and runs
   on darwin — AWS only ships Linux binaries, though the source shows no
   OS-specific files. If darwin builds fail, the recorded fallback is a
