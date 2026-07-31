@@ -25,7 +25,7 @@ func TestValidateBackend(t *testing.T) {
 		{"auto", "auto", false},
 		{"container", "container", false},
 		{"empty", "", false},
-		{"process", "process", true},
+		{"process", "process", false},
 		{"unknown", "unknown", true},
 	}
 	for _, tt := range tests {

@@ -62,6 +62,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `cookies`, `isBase64Encoded`) for full control over the HTTP reply. A
   function configured for the older `1.0` payload format isn't supported
   yet — see `CURRENT_ISSUES.md`.
+- **Process backend**: run functions without Docker, using `--backend
+  process` (or the default `--backend auto`, which now falls back to it
+  automatically — with a clear notice — when no container runtime is
+  usable). Functions are driven by AWS's own Lambda Runtime Interface
+  Emulator against your host's own Node, Python, or custom (`bootstrap`)
+  runtime instead of a container; the emulator is built from pinned
+  upstream source and cached on first use (a one-time ~30s build). Node and
+  Python functions run through small built-in shims with no extra
+  dependencies; `local.command` in `.lambda.yml` still overrides the
+  spawned command entirely. Since there's no container image involved, the
+  process backend runs on whatever runtime versions are installed on your
+  machine rather than AWS's pinned Lambda runtime — closer to your host,
+  not a perfect match for AWS's environment.
 
 ### Changed
 

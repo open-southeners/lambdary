@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-southeners/lambdary/internal/backend"
-	"github.com/open-southeners/lambdary/internal/backend/container"
 	"github.com/open-southeners/lambdary/internal/discovery"
 )
 
@@ -42,6 +41,7 @@ func newInvokeCmd() *cobra.Command {
 	var (
 		eventSource string
 		port        int
+		backendFlag string
 	)
 
 	cmd := &cobra.Command{
@@ -55,25 +55,32 @@ invoke POSTs the event to its AWS-compatible passthrough
 response it returns.
 
 Standalone mode: if no dev server answers on --port, invoke discovers the
-function itself, starts its backend just for this one call, invokes it,
-prints the response, and stops the backend again — useful for a quick
-one-off check without a dev server running.`,
+function itself, starts its backend just for this one call (per --backend),
+invokes it, prints the response, and stops the backend again — useful for a
+quick one-off check without a dev server running.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInvoke(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), root, args[0], eventSource, port)
+			return runInvoke(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), root, args[0], eventSource, port, backendFlag)
 		},
 	}
 
 	cmd.Flags().StringVarP(&eventSource, "event", "e", "", `path to a JSON event file ("-" reads stdin; default: "{}")`)
 	cmd.Flags().IntVar(&port, "port", 0, "dev server port to probe (default: lambdary.yml port or 8000)")
+	cmd.Flags().StringVar(&backendFlag, "backend", "auto", `execution backend for standalone mode: "auto", "container", or "process" (ignored in server mode)`)
 
 	return cmd
 }
 
 // runInvoke resolves the event body and target port, then picks server or
 // standalone mode by probing --port for a running dev server, per
-// plans/m1-container-path.md Unit D.
-func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root, name, eventSource string, portFlag int) error {
+// plans/m1-container-path.md Unit D. backendFlag only matters in standalone
+// mode: server mode reuses whatever backend the running dev server already
+// picked.
+func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root, name, eventSource string, portFlag int, backendFlag string) error {
+	if err := validateBackend(backendFlag); err != nil {
+		return err
+	}
+
 	event, err := resolveEvent(eventSource, stdin)
 	if err != nil {
 		return err
@@ -100,7 +107,7 @@ func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root
 		return err
 	}
 
-	return invokeStandalone(ctx, out, fn, event)
+	return invokeStandalone(ctx, out, errOut, fn, event, backendFlag)
 }
 
 // resolveEvent reads the invoke payload from source: a JSON file path,
@@ -186,17 +193,16 @@ func invokeServer(ctx context.Context, out, errOut io.Writer, port int, name str
 	return nil
 }
 
-// invokeStandalone starts fn's backend just for this one call, POSTs
-// event to it, prints the response to out, and stops the instance again —
-// via defer, so Stop runs on every path once Start succeeds, including
-// invoke errors.
-func invokeStandalone(ctx context.Context, out io.Writer, fn discovery.Function, event []byte) error {
-	cli, err := backend.DetectContainerCLI(ctx, backend.ExecRunner{})
+// invokeStandalone resolves the backend named by backendFlag (see
+// resolveBackend), starts fn's backend just for this one call, POSTs event
+// to it, prints the response to out, and stops the instance again — via
+// defer, so Stop runs on every path once Start succeeds, including invoke
+// errors.
+func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.Function, event []byte, backendFlag string) error {
+	b, _, err := resolveBackend(ctx, backendFlag, backend.ExecRunner{}, errOut)
 	if err != nil {
 		return err
 	}
-
-	b := container.New(cli, backend.ExecRunner{})
 
 	startCtx, cancel := context.WithTimeout(ctx, standaloneStartTimeout)
 	defer cancel()
