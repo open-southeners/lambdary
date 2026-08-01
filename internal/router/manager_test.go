@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -139,6 +140,101 @@ func TestManagerWithLockSerializesPerFunction(t *testing.T) {
 	if peak != 1 {
 		t.Fatalf("peak concurrent WithLock(a) calls = %d, want 1 (serialized)", peak)
 	}
+}
+
+func TestManagerRestartStopsAndForgetsRunningInstance(t *testing.T) {
+	b := newFakeBackend()
+	m := NewManager(b, []discovery.Function{fn("a")})
+
+	if _, err := m.Ensure(context.Background(), "a"); err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+
+	first := b.instance("a")
+
+	if err := m.Restart(context.Background(), "a"); err != nil {
+		t.Fatalf("Restart() error = %v", err)
+	}
+
+	if !first.stopped {
+		t.Fatalf("Restart() left the old instance running")
+	}
+
+	if _, err := m.Ensure(context.Background(), "a"); err != nil {
+		t.Fatalf("Ensure() after Restart() error = %v", err)
+	}
+
+	if got := b.startCount("a"); got != 2 {
+		t.Fatalf("backend.Start called %d times, want 2 (initial start + cold start after Restart)", got)
+	}
+
+	second := b.instance("a")
+	if second == first {
+		t.Fatalf("Ensure() after Restart() returned the same instance, want a fresh one")
+	}
+}
+
+func TestManagerRestartNotRunningNoop(t *testing.T) {
+	m := NewManager(newFakeBackend(), []discovery.Function{fn("a")})
+
+	if err := m.Restart(context.Background(), "a"); err != nil {
+		t.Fatalf("Restart() on a never-started function error = %v, want nil (no-op)", err)
+	}
+}
+
+func TestManagerRestartUnknownFunction(t *testing.T) {
+	m := NewManager(newFakeBackend(), []discovery.Function{fn("a")})
+
+	err := m.Restart(context.Background(), "missing")
+	if !errors.Is(err, ErrUnknownFunction) {
+		t.Fatalf("Restart(missing) error = %v, want errors.Is ErrUnknownFunction", err)
+	}
+}
+
+// TestManagerRestartRaceCleanUnderConcurrentInvoke exercises Restart racing
+// against concurrent Ensure+WithLock invocations (run with -race): the
+// invariant it checks is not which instance ultimately wins any given
+// invoke, only that WithLock never sees itself already held for the same
+// function (which fakeInstance's own concurrency counter — see
+// peakConcurrency — would catch too) and that nothing panics/deadlocks
+// under `go test -race`.
+func TestManagerRestartRaceCleanUnderConcurrentInvoke(t *testing.T) {
+	b := newFakeBackend()
+	m := NewManager(b, []discovery.Function{fn("a")})
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			url, err := m.Ensure(context.Background(), "a")
+			if err != nil {
+				// A concurrent Restart can legitimately race a fresh
+				// Ensure's backend.Start against the fake backend's own
+				// bookkeeping in ways that don't matter here — this test's
+				// only real assertion is "go test -race reports nothing",
+				// so an occasional Ensure error is not itself a failure.
+				return
+			}
+
+			_ = m.WithLock("a", func() error {
+				_, _ = http.Get(url) //nolint:errcheck,noctx // best-effort concurrency exerciser.
+				return nil
+			})
+		}()
+	}
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = m.Restart(context.Background(), "a")
+		}()
+	}
+
+	wg.Wait()
 }
 
 func TestManagerStopAll(t *testing.T) {

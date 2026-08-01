@@ -53,6 +53,17 @@ type Manager struct {
 
 	instMu    sync.Mutex
 	instances map[string]backend.Instance
+
+	// OnStart, when set, is called every time Ensure successfully starts a
+	// fresh instance (never on a cache hit) — dev's log-streaming hook uses
+	// it to start pumping the instance's Logs() without polling for new
+	// instances. It is called outside every Manager lock, after the
+	// instance is already visible to other Ensure calls, so it must not
+	// assume exclusivity and should return quickly (spawn a goroutine for
+	// any long-running work). Callers set it once, before Manager starts
+	// serving requests, so no lock guards the field itself — see
+	// plans/m4-dx.md Unit B.
+	OnStart func(name string, inst backend.Instance)
 }
 
 // NewManager builds a Manager over b for the discovered functions fns,
@@ -90,23 +101,30 @@ func (m *Manager) Ensure(ctx context.Context, name string) (string, error) {
 
 	mu := m.namedMutex(m.starts, name)
 	mu.Lock()
-	defer mu.Unlock()
 
 	m.instMu.Lock()
 	inst, ok := m.instances[name]
 	m.instMu.Unlock()
 	if ok {
+		mu.Unlock()
 		return inst.InvokeURL(), nil
 	}
 
 	inst, err := m.backend.Start(ctx, fn)
 	if err != nil {
+		mu.Unlock()
 		return "", fmt.Errorf("router: starting %s: %w", name, err)
 	}
 
 	m.instMu.Lock()
 	m.instances[name] = inst
 	m.instMu.Unlock()
+
+	mu.Unlock()
+
+	if m.OnStart != nil {
+		m.OnStart(name, inst)
+	}
 
 	return inst.InvokeURL(), nil
 }
@@ -122,6 +140,52 @@ func (m *Manager) WithLock(name string, fn func() error) error {
 	defer mu.Unlock()
 
 	return fn()
+}
+
+// Restart stops name's running instance (if any) and forgets it, so the
+// next Ensure cold-starts a fresh one — the "code changed" half of hot
+// reload (see plans/m4-dx.md Unit B): the caller (dev's watcher event loop)
+// calls Restart on a function code change rather than tearing the whole
+// server down. name must be a known function; unknown names report
+// ErrUnknownFunction, same as Ensure.
+//
+// Restart takes both of name's mutexes, in the same order Ensure/WithLock
+// would use them if nested: the start guard first (so no concurrent Ensure
+// can race in and observe a half-torn-down instance, or start a new one
+// that Restart then wrongly stops), then the invoke lock (so an in-flight
+// invocation finishes against the old instance before Restart stops it).
+// Both stay held for Restart's whole duration, including the Stop call
+// itself, so the next Ensure for name is guaranteed to see it gone and
+// start fresh rather than possibly racing ahead of the teardown.
+func (m *Manager) Restart(ctx context.Context, name string) error {
+	if _, ok := m.fns[name]; !ok {
+		return fmt.Errorf("router: %w: %s", ErrUnknownFunction, name)
+	}
+
+	startMu := m.namedMutex(m.starts, name)
+	startMu.Lock()
+	defer startMu.Unlock()
+
+	invokeMu := m.namedMutex(m.invokeLocks, name)
+	invokeMu.Lock()
+	defer invokeMu.Unlock()
+
+	m.instMu.Lock()
+	inst, ok := m.instances[name]
+	if ok {
+		delete(m.instances, name)
+	}
+	m.instMu.Unlock()
+
+	if !ok {
+		return nil
+	}
+
+	if err := inst.Stop(ctx); err != nil {
+		return fmt.Errorf("router: restarting %s: %w", name, err)
+	}
+
+	return nil
 }
 
 // InvokeTimeout returns the invoke deadline for name: its manifest's
