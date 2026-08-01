@@ -75,6 +75,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   process backend runs on whatever runtime versions are installed on your
   machine rather than AWS's pinned Lambda runtime — closer to your host,
   not a perfect match for AWS's environment.
+- **Hot reload**, on by default in `lambdary dev`: editing a function's code
+  restarts just that function, cold-starting it fresh on its next request.
+  Adding or removing a function directory, or editing a `.lambda.yml` or the
+  project's `lambdary.yml`, reconfigures the whole server on the fly —
+  re-discovering every function and swapping in the new set without
+  dropping the listener. A broken edit is logged with what went wrong and
+  the previous, working configuration keeps running rather than taking the
+  server down. Disable with `--no-reload`.
+- **Live function logs**: each function's combined stdout/stderr — including
+  the emulator's Lambda-style `REPORT` lines — streams to `lambdary dev`'s
+  own output as soon as an instance starts, prefixed `[<name>]` in a color
+  cycled per function. Color is skipped automatically when output isn't a
+  terminal, and always when `NO_COLOR` is set.
+- **`lambdary init <name>`**: scaffolds a new function directory with a
+  ready-to-run handler and `.lambda.yml`, so starting a function needs no
+  boilerplate. `--runtime` picks the stub (`nodejs22.x` by default,
+  `python3.13`, or `provided.al2023` — a working Runtime API `bootstrap`
+  echo loop, not just a placeholder). Refuses to overwrite an existing
+  directory.
 
 ### Changed
 

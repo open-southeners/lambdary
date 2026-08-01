@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -502,6 +504,242 @@ func TestE2EProcessBackend(t *testing.T) {
 			t.Errorf("echo = %v, want {\"a\": 1}", result.Echo)
 		}
 	})
+}
+
+// TestE2EHotReload exercises `lambdary dev`'s hot reload end to end (see
+// plans/m4-dx.md Unit B): it drives the real devServer.run loop — the same
+// code newDevCmd's RunE calls, not a re-implementation — against a copy of
+// the demo fixture's "hello" function in a t.TempDir root (never the repo's
+// own testdata, per the plan's scope decision), over the Docker-free
+// process backend for speed. It proves both reload paths:
+//
+//  1. code change: editing hello's handler changes its response on the
+//     next invocation, without dev exiting or needing a manual restart.
+//  2. structural change: adding a brand-new function directory makes it
+//     routable without dev exiting.
+//
+// Skipped on -short or when python3 isn't on PATH, same guards as
+// TestE2EProcessBackend.
+func TestE2EHotReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e test skipped: -short")
+	}
+
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skipf("e2e test skipped: python3 not on PATH: %v", err)
+	}
+
+	fixtureRoot, err := filepath.Abs("testdata/demo/hello")
+	if err != nil {
+		t.Fatalf("filepath.Abs() unexpected error: %v", err)
+	}
+
+	root := t.TempDir()
+	copyFixtureDir(t, fixtureRoot, filepath.Join(root, "hello"))
+
+	baseline := countRIEProcesses(t)
+
+	port := freeTCPPort(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	d := newDevServer(io.Discard, io.Discard, root, port, false, "process", false)
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- d.run(ctx)
+	}()
+
+	// Generous: covers a cold ~/.lambdary/bin RIE cache (a source build
+	// takes ~30s on this host, per plans/m3-process-path.md), same
+	// allowance TestE2EProcessBackend gives rie.Resolve.
+	addr := waitDevServerReady(t, d, 5*time.Minute)
+	baseURL := "http://" + addr
+
+	client := &http.Client{Timeout: 60 * time.Second}
+
+	t.Cleanup(func() {
+		cancel()
+
+		select {
+		case err := <-runErr:
+			if err != nil {
+				t.Errorf("devServer.run() error = %v", err)
+			}
+		case <-time.After(shutdownTimeout + 5*time.Second):
+			t.Errorf("devServer.run() did not return after ctx cancel")
+		}
+
+		waitForRIEProcessBaseline(t, baseline)
+	})
+
+	original := getBodyOK(t, client, baseURL+"/hello")
+	if strings.Contains(original, "marker") {
+		t.Fatalf("original /hello response already contains \"marker\": %s", original)
+	}
+
+	// Code change: edit the handler to add a new "marker" key to its
+	// response, proving the running instance actually restarted rather
+	// than serving a cached response.
+	handlerPath := filepath.Join(root, "hello", "lambda_function.py")
+	editedHandler := "def lambda_handler(event, context):\n    return {\"echo\": event, \"marker\": \"reloaded\"}\n"
+	if err := os.WriteFile(handlerPath, []byte(editedHandler), 0o644); err != nil {
+		t.Fatalf("writing edited handler: %v", err)
+	}
+
+	var reloaded string
+	pollUntil(t, 20*time.Second, func() bool {
+		reloaded = getBodyOK(t, client, baseURL+"/hello")
+		return strings.Contains(reloaded, "marker")
+	})
+	if !strings.Contains(reloaded, "marker") {
+		t.Fatalf("/hello response never picked up the handler edit; last body: %s", reloaded)
+	}
+
+	// Structural change: add a brand-new function directory with its own
+	// handler + .lambda.yml, proving it becomes routable without a
+	// restart.
+	newFnDir := filepath.Join(root, "second")
+	if err := os.Mkdir(newFnDir, 0o755); err != nil {
+		t.Fatalf("Mkdir(%s): %v", newFnDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(newFnDir, "lambda_function.py"),
+		[]byte("def lambda_handler(event, context):\n    return {\"echo\": event}\n"), 0o644); err != nil {
+		t.Fatalf("writing new function handler: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(newFnDir, ".lambda.yml"),
+		[]byte("runtime: python3.13\nhandler: lambda_function.lambda_handler\ntimeout: 120\n"), 0o644); err != nil {
+		t.Fatalf("writing new function manifest: %v", err)
+	}
+
+	var newFnStatus int
+	pollUntil(t, 20*time.Second, func() bool {
+		resp, err := client.Get(baseURL + "/second") //nolint:noctx // pollUntil already bounds this.
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+
+		newFnStatus = resp.StatusCode
+
+		return resp.StatusCode == http.StatusOK
+	})
+	if newFnStatus != http.StatusOK {
+		t.Fatalf("GET /second status = %d, want 200 (new function never became routable)", newFnStatus)
+	}
+}
+
+// copyFixtureDir recursively copies src into dst (creating dst), skipping
+// __pycache__ directories — used so TestE2EHotReload edits a t.TempDir copy
+// of the demo fixture rather than the repo's own testdata.
+func copyFixtureDir(t *testing.T, src, dst string) {
+	t.Helper()
+
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", dst, err)
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", src, err)
+	}
+
+	for _, entry := range entries {
+		if entry.Name() == "__pycache__" {
+			continue
+		}
+
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			copyFixtureDir(t, srcPath, dstPath)
+			continue
+		}
+
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", srcPath, err)
+		}
+		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", dstPath, err)
+		}
+	}
+}
+
+// freeTCPPort asks the OS for a free TCP port by binding to :0 and
+// immediately releasing it, so TestE2EHotReload's devServer doesn't
+// collide with anything already listening on the default port. A brief
+// TOCTOU race (something else grabs the port before devServer binds it) is
+// possible but rare enough to accept in a test.
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// waitDevServerReady waits up to timeout for d's listen address on its
+// ready channel, failing the test if it never arrives.
+func waitDevServerReady(t *testing.T, d *devServer, timeout time.Duration) string {
+	t.Helper()
+
+	select {
+	case addr := <-d.ready:
+		return addr
+	case <-time.After(timeout):
+		t.Fatalf("devServer never became ready within %s", timeout)
+		return ""
+	}
+}
+
+// getBodyOK GETs url, requiring a 200 response, and returns its body as a
+// string.
+func getBodyOK(t *testing.T, client *http.Client, url string) string {
+	t.Helper()
+
+	resp, err := client.Get(url) //nolint:noctx // caller already applied a client-level timeout.
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading response body from %s: %v", url, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200; body = %s", url, resp.StatusCode, body)
+	}
+
+	return string(body)
+}
+
+// pollUntil calls check every 300ms until it returns true or deadline
+// elapses, so callers can assert on check's own last-observed state
+// afterwards without pollUntil itself needing to know what a useful
+// failure message looks like.
+func pollUntil(t *testing.T, deadline time.Duration, check func() bool) {
+	t.Helper()
+
+	const pollInterval = 300 * time.Millisecond
+
+	end := time.Now().Add(deadline)
+	for {
+		if check() {
+			return
+		}
+		if time.Now().After(end) {
+			return
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 // countRIEProcesses returns how many processes on the host currently match
