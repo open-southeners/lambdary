@@ -130,8 +130,20 @@ func (b *processBackend) Start(ctx context.Context, fn discovery.Function) (back
 	}
 
 	if err := waitReady(ctx, invokePort, timeout); err != nil {
-		tail := proc.out.tail(2048)
+		// Stop (kill + wait for exit) *before* snapshotting the output
+		// tail, not after: proc.stop only returns once cmd.Wait() has
+		// returned, and — because spawn wires the process's combined
+		// stdout+stderr into out (an io.Writer, not an *os.File) —
+		// os/exec's own Cmd.Wait contract guarantees Wait doesn't return
+		// until the goroutine copying that output has drained its pipe to
+		// EOF. Snapshotting before stopping would race that drain: the
+		// process may already have written its last log line (e.g. a boot
+		// error) to the pipe, but this side might not have read it into
+		// out yet, silently dropping it from the error below. stop's own
+		// grace period (stopGrace) plus SIGKILL escalation keeps this
+		// bounded rather than an open-ended wait.
 		proc.stop(stopGrace) //nolint:errcheck // best-effort cleanup of a process that never became ready; the readiness error is what matters to the caller.
+		tail := proc.out.tail(2048)
 
 		return nil, fmt.Errorf("process: %s: %w%s", fn.Name, err, tail)
 	}

@@ -183,28 +183,53 @@ func TestProcessBackendStart(t *testing.T) {
 	})
 
 	t.Run("readiness timeout stops the process and surfaces recent output", func(t *testing.T) {
-		riePath := writeTestScript(t, "#!/bin/sh\necho boot failed >&2\nsleep 5\n")
-
 		// Two full seconds, not milliseconds: this needs to comfortably
 		// outlast the script's own fork/exec/echo latency even when the host
 		// is busy running other packages' tests in parallel (go test's
 		// normal mode) — the assertion below only cares that Start() didn't
 		// wait anywhere near the real defaultReadyTimeout, not that it was
 		// fast in absolute terms.
-		b := &processBackend{riePath: riePath, home: t.TempDir(), readyTimeout: 2 * time.Second}
-		fn := discovery.Function{Name: "slow", Dir: t.TempDir(), Runtime: "nodejs22.x", Handler: "index.handler", Manifest: &manifest.Manifest{}}
+		const readyTimeout = 2 * time.Second
 
-		start := time.Now()
-		_, err := b.Start(context.Background(), fn)
-		if err == nil {
-			t.Fatal("Start() expected a readiness timeout error, got nil")
+		// Retried up to maxAttempts times: under a genuinely saturated host
+		// (e.g. every package's tests running in parallel at once, each
+		// itself spawning processes), the OS can occasionally fail to
+		// schedule this test's brand-new child process at all within the
+		// whole readyTimeout window, so it never even reaches its first
+		// "echo" line — confirmed by instrumenting Start's readiness-failure
+		// path during triage: the failing run showed a fully-drained, empty
+		// buffer (proc.stop returned in ~160µs, tailLen=0), not a
+		// partially-written one, ruling out a snapshot-before-drain race
+		// (see process.go's Start, which now stops — and so waits for the
+		// output-copying goroutine to finish — before snapshotting the
+		// tail). That's host scheduling noise, not a defect in Start, so a
+		// bounded retry here is the right tool rather than loosening the
+		// assertion or growing readyTimeout.
+		const maxAttempts = 3
+
+		var err error
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			riePath := writeTestScript(t, "#!/bin/sh\necho boot failed >&2\nsleep 5\n")
+			b := &processBackend{riePath: riePath, home: t.TempDir(), readyTimeout: readyTimeout}
+			fn := discovery.Function{Name: "slow", Dir: t.TempDir(), Runtime: "nodejs22.x", Handler: "index.handler", Manifest: &manifest.Manifest{}}
+
+			start := time.Now()
+			_, err = b.Start(context.Background(), fn)
+			if err == nil {
+				t.Fatal("Start() expected a readiness timeout error, got nil")
+			}
+			if elapsed := time.Since(start); elapsed > 6*time.Second {
+				t.Errorf("Start() took %s, want it to respect the tiny readyTimeout", elapsed)
+			}
+
+			if strings.Contains(err.Error(), "boot failed") {
+				return
+			}
+
+			t.Logf("attempt %d/%d: Start() error = %v, missing the output tail (likely the child never got scheduled within readyTimeout under host load); retrying", attempt, maxAttempts, err)
 		}
-		if elapsed := time.Since(start); elapsed > 6*time.Second {
-			t.Errorf("Start() took %s, want it to respect the tiny readyTimeout", elapsed)
-		}
-		if !strings.Contains(err.Error(), "boot failed") {
-			t.Errorf("Start() error = %v, want it to include the recent output tail", err)
-		}
+
+		t.Errorf("Start() error = %v, want it to include the recent output tail after %d attempts", err, maxAttempts)
 	})
 }
 
