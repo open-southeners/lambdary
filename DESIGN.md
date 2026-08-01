@@ -243,7 +243,7 @@ lambdary dev [root]        # discover, watch, serve (the main command)
 lambdary list              # discovered functions, runtime, backend, route
 lambdary invoke <fn> [-e event.json]   # one-shot raw invoke, prints result
 lambdary logs [fn]         # follow logs
-lambdary init [runtime]    # scaffold a function dir + .lambda.yml
+lambdary init <name> [--runtime <id>]   # scaffold a function dir + .lambda.yml
 ```
 
 ## Proposed repo layout
