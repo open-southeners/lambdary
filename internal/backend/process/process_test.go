@@ -55,6 +55,15 @@ func writeTestScript(t *testing.T, content string) string {
 	return path
 }
 
+// writeFile writes content to path, failing the test on any error.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+}
+
 func TestProcessBackendStart(t *testing.T) {
 	t.Run("happy path: writes shims, allocates ports, spawns with cwd/env, waits ready", func(t *testing.T) {
 		riePath := fakeRIEPath(t)
@@ -162,6 +171,81 @@ func TestProcessBackendStart(t *testing.T) {
 		}
 	})
 
+	t.Run("local.env_file is loaded and merged under manifest environment", func(t *testing.T) {
+		riePath := fakeRIEPath(t)
+		fnDir := t.TempDir()
+		recordPath := filepath.Join(t.TempDir(), "record.json")
+
+		writeFile(t, filepath.Join(fnDir, ".env"), "FOO=from-file\nBAR=file-only\n")
+
+		b := &processBackend{riePath: riePath, home: t.TempDir(), readyTimeout: 5 * time.Second}
+
+		fn := discovery.Function{
+			Name:    "hello",
+			Dir:     fnDir,
+			Runtime: "nodejs22.x",
+			Handler: "index.handler",
+			Manifest: &manifest.Manifest{
+				Environment: map[string]string{
+					"FAKE_RIE_RECORD": recordPath,
+					"FOO":             "from-manifest",
+				},
+				Local: manifest.Local{EnvFile: ".env"},
+			},
+		}
+
+		inst, err := b.Start(context.Background(), fn)
+		if err != nil {
+			t.Fatalf("Start() unexpected error: %v", err)
+		}
+		defer inst.Stop(context.Background()) //nolint:errcheck // best-effort cleanup.
+
+		resp, err := http.Get(inst.InvokeURL())
+		if err != nil {
+			t.Fatalf("GET InvokeURL() unexpected error: %v", err)
+		}
+		resp.Body.Close() //nolint:errcheck // draining a test response body.
+
+		data, err := os.ReadFile(recordPath)
+		if err != nil {
+			t.Fatalf("reading fake RIE's recorded argv/env/cwd: %v", err)
+		}
+
+		var rec fakeRIERecord
+		if err := json.Unmarshal(data, &rec); err != nil {
+			t.Fatalf("unmarshalling fake RIE record: %v", err)
+		}
+
+		if rec.Env["FOO"] != "from-manifest" {
+			t.Errorf("env FOO = %q, want %q (manifest environment wins over env_file)", rec.Env["FOO"], "from-manifest")
+		}
+		if rec.Env["BAR"] != "file-only" {
+			t.Errorf("env BAR = %q, want %q (from env_file)", rec.Env["BAR"], "file-only")
+		}
+	})
+
+	t.Run("missing configured local.env_file errors naming the path, without spawning anything", func(t *testing.T) {
+		fnDir := t.TempDir()
+		b := &processBackend{riePath: "/should-not-be-invoked", home: t.TempDir()}
+		fn := discovery.Function{
+			Name:    "hello",
+			Dir:     fnDir,
+			Runtime: "nodejs22.x",
+			Handler: "index.handler",
+			Manifest: &manifest.Manifest{
+				Local: manifest.Local{EnvFile: "missing.env"},
+			},
+		}
+
+		_, err := b.Start(context.Background(), fn)
+		if err == nil {
+			t.Fatal("Start() expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), filepath.Join(fnDir, "missing.env")) {
+			t.Errorf("Start() error = %v, want it to name the resolved env_file path", err)
+		}
+	})
+
 	t.Run("unsupported runtime errors before ever spawning", func(t *testing.T) {
 		b := &processBackend{riePath: "/should-not-be-invoked", home: t.TempDir()}
 		fn := discovery.Function{Name: "hello", Dir: t.TempDir(), Runtime: "ruby3.3", Manifest: &manifest.Manifest{}}
@@ -230,6 +314,76 @@ func TestProcessBackendStart(t *testing.T) {
 		}
 
 		t.Errorf("Start() error = %v, want it to include the recent output tail after %d attempts", err, maxAttempts)
+	})
+}
+
+func TestLoadEnvFile(t *testing.T) {
+	t.Run("no local.env_file configured returns a nil map, no error", func(t *testing.T) {
+		fn := discovery.Function{Name: "hello", Manifest: &manifest.Manifest{}}
+
+		env, err := loadEnvFile(fn, t.TempDir())
+		if err != nil {
+			t.Fatalf("loadEnvFile() unexpected error: %v", err)
+		}
+		if env != nil {
+			t.Errorf("loadEnvFile() = %v, want nil", env)
+		}
+	})
+
+	t.Run("nil manifest behaves like an empty one", func(t *testing.T) {
+		fn := discovery.Function{Name: "hello"}
+
+		env, err := loadEnvFile(fn, t.TempDir())
+		if err != nil {
+			t.Fatalf("loadEnvFile() unexpected error: %v", err)
+		}
+		if env != nil {
+			t.Errorf("loadEnvFile() = %v, want nil", env)
+		}
+	})
+
+	t.Run("relative path resolves against absDir", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "config.env"), "FOO=bar\n")
+
+		fn := discovery.Function{Name: "hello", Manifest: &manifest.Manifest{Local: manifest.Local{EnvFile: "config.env"}}}
+
+		env, err := loadEnvFile(fn, dir)
+		if err != nil {
+			t.Fatalf("loadEnvFile() unexpected error: %v", err)
+		}
+		if env["FOO"] != "bar" {
+			t.Errorf("loadEnvFile() = %v, want FOO=bar", env)
+		}
+	})
+
+	t.Run("absolute path is used as-is", func(t *testing.T) {
+		otherDir := t.TempDir()
+		absPath := filepath.Join(otherDir, "outside.env")
+		writeFile(t, absPath, "FOO=abs\n")
+
+		fn := discovery.Function{Name: "hello", Manifest: &manifest.Manifest{Local: manifest.Local{EnvFile: absPath}}}
+
+		env, err := loadEnvFile(fn, t.TempDir())
+		if err != nil {
+			t.Fatalf("loadEnvFile() unexpected error: %v", err)
+		}
+		if env["FOO"] != "abs" {
+			t.Errorf("loadEnvFile() = %v, want FOO=abs", env)
+		}
+	})
+
+	t.Run("missing configured file errors naming the resolved path", func(t *testing.T) {
+		dir := t.TempDir()
+		fn := discovery.Function{Name: "hello", Manifest: &manifest.Manifest{Local: manifest.Local{EnvFile: "nope.env"}}}
+
+		_, err := loadEnvFile(fn, dir)
+		if err == nil {
+			t.Fatal("loadEnvFile() expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), filepath.Join(dir, "nope.env")) {
+			t.Errorf("loadEnvFile() error = %v, want it to name %s", err, filepath.Join(dir, "nope.env"))
+		}
 	})
 }
 

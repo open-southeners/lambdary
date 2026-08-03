@@ -111,13 +111,18 @@ func (b *processBackend) Start(ctx context.Context, fn discovery.Function) (back
 		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
 	}
 
+	fileEnv, err := loadEnvFile(fn, absDir)
+	if err != nil {
+		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
+	}
+
 	invokePort, rapiPort, err := allocatePorts()
 	if err != nil {
 		return nil, fmt.Errorf("process: %s: allocating ports: %w", fn.Name, err)
 	}
 
 	argv := rieArgs(invokePort, rapiPort, runtimeName, runtimeArgs)
-	env := append(os.Environ(), manifestEnv(fn)...)
+	env := append(os.Environ(), manifestEnv(fn, fileEnv)...)
 
 	proc, err := spawn(b.riePath, argv, absDir, env)
 	if err != nil {
@@ -149,6 +154,33 @@ func (b *processBackend) Start(ctx context.Context, fn discovery.Function) (back
 	}
 
 	return &instance{proc: proc, port: invokePort}, nil
+}
+
+// loadEnvFile loads fn's local.env_file (manifest.Local.EnvFile), resolving
+// a relative path against absDir (fn's directory, already made absolute) —
+// per plans/m5-extras.md's Unit D. Mirrors internal/backend/container's
+// loadEnvFile for the container backend. It returns a nil map and nil error
+// when fn has no local.env_file configured at all. A configured path that
+// can't be opened or parsed is a Start error naming the path: env_file was
+// set explicitly, so silently running without it would hide a typo or a
+// missing file rather than surfacing it.
+func loadEnvFile(fn discovery.Function, absDir string) (map[string]string, error) {
+	m := fn.Manifest
+	if m == nil || m.Local.EnvFile == "" {
+		return nil, nil
+	}
+
+	path := m.Local.EnvFile
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(absDir, path)
+	}
+
+	env, err := backend.ParseEnvFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("loading local.env_file: %w", err)
+	}
+
+	return env, nil
 }
 
 // defaultHome resolves $LAMBDARY_HOME, the shared root for Lambdary's local

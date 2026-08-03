@@ -98,24 +98,27 @@ func rieArgs(invokePort, rapiPort int, runtimeName string, runtimeArgs []string)
 
 // manifestEnv builds the env vars Start adds on top of the inherited
 // os.Environ() for the spawned RIE (and, transitively, the runtime process
-// it launches): the manifest's own environment block, then
-// AWS_LAMBDA_FUNCTION_NAME, then AWS_LAMBDA_FUNCTION_TIMEOUT and
-// AWS_LAMBDA_FUNCTION_MEMORY_SIZE when the manifest sets them — mirroring
-// container/argv.go's runArgs env handling for the container backend. A
-// pure function so tests can assert it without inheriting the real
-// process's environment. The RIE sets AWS_LAMBDA_RUNTIME_API on its runtime
-// child itself; this package's shims just read it (see shims/bootstrap.mjs
-// and shims/bootstrap.py).
-func manifestEnv(fn discovery.Function) []string {
+// it launches): fileEnv (the function's already-loaded local.env_file, or
+// nil when it has none) merged under the manifest's own environment block
+// (manifest wins on conflict — see envMerge), then AWS_LAMBDA_FUNCTION_NAME,
+// then AWS_LAMBDA_FUNCTION_TIMEOUT and AWS_LAMBDA_FUNCTION_MEMORY_SIZE when
+// the manifest sets them — mirroring container/argv.go's runArgs env
+// handling for the container backend. A pure function so tests can assert
+// it without inheriting the real process's environment. The RIE sets
+// AWS_LAMBDA_RUNTIME_API on its runtime child itself; this package's shims
+// just read it (see shims/bootstrap.mjs and shims/bootstrap.py).
+func manifestEnv(fn discovery.Function, fileEnv map[string]string) []string {
 	m := fn.Manifest
 	if m == nil {
 		m = &manifest.Manifest{}
 	}
 
-	env := make([]string, 0, len(m.Environment)+3)
+	merged := envMerge(fileEnv, m.Environment)
 
-	for _, k := range sortedKeys(m.Environment) {
-		env = append(env, k+"="+m.Environment[k])
+	env := make([]string, 0, len(merged)+3)
+
+	for _, k := range sortedKeys(merged) {
+		env = append(env, k+"="+merged[k])
 	}
 
 	env = append(env, "AWS_LAMBDA_FUNCTION_NAME="+fn.Name)
@@ -129,6 +132,29 @@ func manifestEnv(fn discovery.Function) []string {
 	}
 
 	return env
+}
+
+// envMerge combines fileEnv (local.env_file's parsed content) and
+// manifestEnv (the manifest's own `environment` block) into the environment
+// the manifestEnv function above passes to the RIE, with manifestEnv's keys
+// winning on conflict — per plans/m5-extras.md's Unit D ("merge UNDER
+// manifest environment"), env_file exists to supply defaults or secrets the
+// manifest itself doesn't already set, not to override it. Mirrors
+// container/argv.go's envMerge for the container backend.
+func envMerge(fileEnv, manifestEnv map[string]string) map[string]string {
+	if len(fileEnv) == 0 {
+		return manifestEnv
+	}
+
+	merged := make(map[string]string, len(fileEnv)+len(manifestEnv))
+	for k, v := range fileEnv {
+		merged[k] = v
+	}
+	for k, v := range manifestEnv {
+		merged[k] = v
+	}
+
+	return merged
 }
 
 // sortedKeys returns m's keys in sorted order, so environment variables are

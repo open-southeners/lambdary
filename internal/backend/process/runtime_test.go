@@ -187,7 +187,7 @@ func TestManifestEnv(t *testing.T) {
 			},
 		}
 
-		got := manifestEnv(fn)
+		got := manifestEnv(fn, nil)
 		want := []string{
 			"API_KEY=secret",
 			"TABLE_NAME=local-table",
@@ -204,7 +204,7 @@ func TestManifestEnv(t *testing.T) {
 	t.Run("minimal manifest: only the function name", func(t *testing.T) {
 		fn := discovery.Function{Name: "minimal", Manifest: &manifest.Manifest{}}
 
-		got := manifestEnv(fn)
+		got := manifestEnv(fn, nil)
 		want := []string{"AWS_LAMBDA_FUNCTION_NAME=minimal"}
 
 		if !reflect.DeepEqual(got, want) {
@@ -215,11 +215,56 @@ func TestManifestEnv(t *testing.T) {
 	t.Run("nil manifest behaves like an empty one", func(t *testing.T) {
 		fn := discovery.Function{Name: "no-manifest"}
 
-		got := manifestEnv(fn)
+		got := manifestEnv(fn, nil)
 		want := []string{"AWS_LAMBDA_FUNCTION_NAME=no-manifest"}
 
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("manifestEnv() =\n%v\nwant\n%v", got, want)
+		}
+	})
+
+	t.Run("fileEnv is folded in under manifest environment", func(t *testing.T) {
+		fn := discovery.Function{
+			Name: "hello",
+			Manifest: &manifest.Manifest{
+				Environment: map[string]string{"API_KEY": "secret"},
+			},
+		}
+
+		fileEnv := map[string]string{"API_KEY": "from-file", "EXTRA": "from-file-only"}
+
+		got := manifestEnv(fn, fileEnv)
+		want := []string{
+			"API_KEY=secret",
+			"EXTRA=from-file-only",
+			"AWS_LAMBDA_FUNCTION_NAME=hello",
+		}
+
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("manifestEnv() =\n%v\nwant\n%v (explicit environment must win over fileEnv on conflict)", got, want)
+		}
+	})
+}
+
+func TestEnvMerge(t *testing.T) {
+	t.Run("manifest environment wins over fileEnv on key conflict", func(t *testing.T) {
+		got := envMerge(
+			map[string]string{"A": "file", "B": "file-only"},
+			map[string]string{"A": "manifest"},
+		)
+		want := map[string]string{"A": "manifest", "B": "file-only"}
+
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("envMerge() =\n%v\nwant\n%v", got, want)
+		}
+	})
+
+	t.Run("empty fileEnv returns the manifest environment unchanged", func(t *testing.T) {
+		manifestEnv := map[string]string{"A": "manifest"}
+
+		got := envMerge(nil, manifestEnv)
+		if !reflect.DeepEqual(got, manifestEnv) {
+			t.Errorf("envMerge() =\n%v\nwant\n%v", got, manifestEnv)
 		}
 	})
 }
