@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Prebuilt `lambdary` binaries for Linux and macOS (amd64 + arm64) are now
+  attached to every GitHub release, with SHA-256 checksums, and release
+  notes are generated automatically from this changelog.
 - **Function discovery**: every direct subdirectory of the project root that
   contains a `.lambda.yml` or a recognizable project file (`package.json`,
   `composer.json`, `pyproject.toml`/`requirements.txt`, `go.mod`, `Gemfile`,

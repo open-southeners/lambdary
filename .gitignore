@@ -20,3 +20,6 @@
 
 # Python bytecode caches from shim tests
 __pycache__/
+
+# Release build output (CI writes here; local dry-runs of the release loop too)
+/dist/

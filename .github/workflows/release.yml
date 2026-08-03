@@ -1,0 +1,125 @@
+# Release
+#
+# Trigger: pushing a tag matching v[0-9]+.[0-9]+.[0-9]+ or
+#   v[0-9]+.[0-9]+.[0-9]+-<pre-release> (e.g. v1.2.3, v1.2.3-rc.1).
+#
+# Steps:
+#   1. release   - derive the version from the tag, require a matching
+#                  `## [X.Y.Z]` section in CHANGELOG.md (release-flow/
+#                  keep-a-changelog-action, command: query), and create the
+#                  GitHub release with that section as its body.
+#   2. binaries  - cross-compile linux/darwin, amd64+arm64 binaries, package
+#                  each as a tar.gz with README.md and CHANGELOG.md, generate
+#                  checksums.txt, and upload everything to the release
+#                  created above.
+#
+# A release REQUIRES a `## [X.Y.Z]` section in CHANGELOG.md for the tagged
+# version, or the release job fails before anything is built or published —
+# see RELEASING.md before tagging.
+#
+# Retry semantics: safe to re-run after a partial failure. softprops/
+# action-gh-release matches on tag_name and updates the existing release
+# instead of creating a duplicate, and re-uploaded assets with the same
+# filename replace the previous ones — so re-running this workflow (or just
+# the `binaries` job) after e.g. a network blip during asset upload picks up
+# where it left off without any manual cleanup.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Query changelog section
+        id: changelog
+        uses: release-flow/keep-a-changelog-action@v3
+        with:
+          command: query
+          version: ${{ steps.version.outputs.version }}
+
+      - name: No changelog section for this version
+        if: failure()
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "::error::CHANGELOG.md has no [${VERSION}] section for this tag — see RELEASING.md"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.release-notes }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
+
+  binaries:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build and package binaries
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS="${pair%/*}"
+            GOARCH="${pair#*/}"
+            outdir="dist/${GOOS}_${GOARCH}"
+            mkdir -p "${outdir}"
+
+            CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build -trimpath \
+              -ldflags "-s -w -X github.com/open-southeners/lambdary/internal/cli.version=${VERSION}" \
+              -o "${outdir}/lambdary" ./cmd/lambdary
+
+            cp README.md CHANGELOG.md "${outdir}/"
+
+            tar -czf "dist/lambdary_${VERSION}_${GOOS}_${GOARCH}.tar.gz" \
+              -C "${outdir}" lambdary README.md CHANGELOG.md
+          done
+
+          actual_version="$(dist/linux_amd64/lambdary --version)"
+          case "${actual_version}" in
+            *"${VERSION}"*) ;;
+            *)
+              echo "::error::linux/amd64 binary reports '${actual_version}', expected it to contain '${VERSION}'"
+              exit 1
+              ;;
+          esac
+
+          (cd dist && sha256sum lambdary_*.tar.gz > checksums.txt)
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
