@@ -19,10 +19,13 @@ var archPlatforms = map[string]string{
 
 // runArgs builds the full `<cli> run ...` argv for starting fn as a
 // container from image, with fnDir (an absolute path) bind-mounted at
-// /var/task, per plans/m1-container-path.md Unit B's exact flag order. It
-// is a pure function — no I/O, no CLI invocation — so tests can assert the
-// built argv directly against a fake runner's recorded calls.
-func runArgs(fn discovery.Function, image, fnDir string) []string {
+// /var/task, per plans/m1-container-path.md Unit B's exact flag order.
+// fileEnv is the (already-loaded) content of the function's local.env_file,
+// or nil when it has none — see envMerge for the precedence between it and
+// the manifest's own environment block. It is a pure function — no I/O, no
+// CLI invocation — so tests can assert the built argv directly against a
+// fake runner's recorded calls.
+func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]string) []string {
 	m := fn.Manifest
 	if m == nil {
 		m = &manifest.Manifest{}
@@ -36,8 +39,9 @@ func runArgs(fn discovery.Function, image, fnDir string) []string {
 		"-v", fnDir + ":/var/task:ro",
 	}
 
-	for _, k := range sortedKeys(m.Environment) {
-		args = append(args, "-e", k+"="+m.Environment[k])
+	env := envMerge(fileEnv, m.Environment)
+	for _, k := range sortedKeys(env) {
+		args = append(args, "-e", k+"="+env[k])
 	}
 
 	args = append(args, "-e", "AWS_LAMBDA_FUNCTION_NAME="+fn.Name)
@@ -75,6 +79,28 @@ func platformFor(arch string) string {
 	}
 
 	return "linux/" + arch
+}
+
+// envMerge combines fileEnv (local.env_file's parsed content) and
+// manifestEnv (the manifest's own `environment` block) into the environment
+// runArgs passes to the container, with manifestEnv's keys winning on
+// conflict — per plans/m5-extras.md's Unit D ("merge UNDER manifest
+// environment"), env_file exists to supply defaults or secrets the manifest
+// itself doesn't already set, not to override it.
+func envMerge(fileEnv, manifestEnv map[string]string) map[string]string {
+	if len(fileEnv) == 0 {
+		return manifestEnv
+	}
+
+	merged := make(map[string]string, len(fileEnv)+len(manifestEnv))
+	for k, v := range fileEnv {
+		merged[k] = v
+	}
+	for k, v := range manifestEnv {
+		merged[k] = v
+	}
+
+	return merged
 }
 
 // sortedKeys returns m's keys in sorted order, so environment variables are

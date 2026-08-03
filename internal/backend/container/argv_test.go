@@ -25,7 +25,7 @@ func TestRunArgs(t *testing.T) {
 			},
 		}
 
-		got := runArgs(fn, "public.ecr.aws/lambda/python:3.13", "/abs/hello")
+		got := runArgs(fn, "public.ecr.aws/lambda/python:3.13", "/abs/hello", nil)
 
 		want := []string{
 			"run", "-d", "--rm",
@@ -55,7 +55,7 @@ func TestRunArgs(t *testing.T) {
 			Manifest: &manifest.Manifest{Architectures: []string{"x86_64"}},
 		}
 
-		got := runArgs(fn, "image", "/abs/hello")
+		got := runArgs(fn, "image", "/abs/hello", nil)
 
 		want := []string{
 			"run", "-d", "--rm",
@@ -79,7 +79,7 @@ func TestRunArgs(t *testing.T) {
 			Manifest: &manifest.Manifest{},
 		}
 
-		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/minimal")
+		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/minimal", nil)
 
 		want := []string{
 			"run", "-d", "--rm",
@@ -99,7 +99,7 @@ func TestRunArgs(t *testing.T) {
 	t.Run("nil manifest behaves like an empty one", func(t *testing.T) {
 		fn := discovery.Function{Name: "no-manifest"}
 
-		got := runArgs(fn, "image", "/abs/no-manifest")
+		got := runArgs(fn, "image", "/abs/no-manifest", nil)
 
 		want := []string{
 			"run", "-d", "--rm",
@@ -113,6 +113,58 @@ func TestRunArgs(t *testing.T) {
 
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("runArgs() =\n%v\nwant\n%v", got, want)
+		}
+	})
+
+	t.Run("fileEnv is folded in under manifest environment", func(t *testing.T) {
+		fn := discovery.Function{
+			Name: "hello",
+			Manifest: &manifest.Manifest{
+				Environment: map[string]string{"API_KEY": "secret"},
+			},
+		}
+
+		fileEnv := map[string]string{"API_KEY": "from-file", "EXTRA": "from-file-only"}
+
+		got := runArgs(fn, "image", "/abs/hello", fileEnv)
+
+		want := []string{
+			"run", "-d", "--rm",
+			"--label", "lambdary=1",
+			"--label", "lambdary.function=hello",
+			"-p", "127.0.0.1:0:8080",
+			"-v", "/abs/hello:/var/task:ro",
+			"-e", "API_KEY=secret",
+			"-e", "EXTRA=from-file-only",
+			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"image",
+		}
+
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("runArgs() =\n%v\nwant\n%v (explicit environment must win over fileEnv on conflict)", got, want)
+		}
+	})
+}
+
+func TestEnvMerge(t *testing.T) {
+	t.Run("manifest environment wins over fileEnv on key conflict", func(t *testing.T) {
+		got := envMerge(
+			map[string]string{"A": "file", "B": "file-only"},
+			map[string]string{"A": "manifest"},
+		)
+		want := map[string]string{"A": "manifest", "B": "file-only"}
+
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("envMerge() =\n%v\nwant\n%v", got, want)
+		}
+	})
+
+	t.Run("empty fileEnv returns the manifest environment unchanged", func(t *testing.T) {
+		manifestEnv := map[string]string{"A": "manifest"}
+
+		got := envMerge(nil, manifestEnv)
+		if !reflect.DeepEqual(got, manifestEnv) {
+			t.Errorf("envMerge() =\n%v\nwant\n%v", got, manifestEnv)
 		}
 	})
 }
@@ -142,15 +194,17 @@ func TestResolveImage(t *testing.T) {
 		}
 	})
 
-	t.Run("Dockerfile-marker function errors as not yet supported", func(t *testing.T) {
+	t.Run("Dockerfile-marker function with no override falls through to ImageFor", func(t *testing.T) {
+		// resolveImage itself no longer special-cases Dockerfile-marker
+		// functions — Start builds an image and sets fn.Image before ever
+		// calling resolveImage for one (see build_test.go). Called
+		// directly with neither an override nor a resolvable runtime, it
+		// just surfaces ImageFor's own error.
 		fn := discovery.Function{Name: "docker-app", Backend: "container"}
 
 		_, err := resolveImage(fn)
 		if err == nil {
 			t.Fatal("resolveImage() expected error, got nil")
-		}
-		if err != ErrDockerfileNotSupported {
-			t.Errorf("resolveImage() error = %v, want ErrDockerfileNotSupported", err)
 		}
 	})
 
