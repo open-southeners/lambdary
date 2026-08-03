@@ -59,9 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   event, with headers, cookies, query strings, and binary bodies mapped in
   both directions. Handlers can return either a plain value (serialized as
   the JSON body, `200`) or a shaped response (`statusCode`, `headers`,
-  `cookies`, `isBase64Encoded`) for full control over the HTTP reply. A
-  function configured for the older `1.0` payload format isn't supported
-  yet — see `CURRENT_ISSUES.md`.
+  `cookies`, `isBase64Encoded`) for full control over the HTTP reply.
 - **Process backend**: run functions without Docker, using `--backend
   process` (or the default `--backend auto`, which now falls back to it
   automatically — with a clear notice — when no container runtime is
@@ -94,6 +92,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `python3.13`, or `provided.al2023` — a working Runtime API `bootstrap`
   echo loop, not just a placeholder). Refuses to overwrite an existing
   directory.
+- **API Gateway REST API (`1.0`) payload format**, selectable per function
+  via `url.payload: "1.0"` instead of the default `"2.0"` — events carry
+  the REST API shape (`resource`, `pathParameters.proxy`,
+  `multiValueHeaders`, …) and, like the real service, the response
+  contract is strict: a handler must return a shaped `{statusCode, ...}`
+  object.
+- **`Dockerfile` functions**: a function directory with a `Dockerfile` and
+  no `runtime`/`local.image` now builds and runs automatically — no more
+  manual `docker build`. It rebuilds on every start, so hot reload picks up
+  `Dockerfile` and code edits the same way any other function does.
+- **`.lambdary/lock`**: the container backend records each function's
+  resolved image digest the first time it starts and pins subsequent
+  starts to that digest. Commit the file for reproducible starts across
+  machines; a locally built `Dockerfile` image or an explicit
+  `local.image` override is never pinned.
+- **`local.env_file`**: loads extra environment variables for a function
+  from a dotenv-style file (`KEY=VALUE` per line, `#` comments, optional
+  `export` prefix), merged under the manifest's own `environment` block —
+  explicit `environment` keys always win on conflict.
 
 ### Changed
 

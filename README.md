@@ -102,6 +102,7 @@ local:                    # local-development-only section
   backend: auto           # auto | container | process
   image: ""               # container image override
   command: ""             # process-backend command override
+  env_file: ""            # extra environment from a dotenv-style file (explicit `environment` keys win)
 ```
 
 Project-wide `lambdary.yml` next to your functions:
@@ -126,8 +127,13 @@ Unknown keys in either file are rejected, so typos surface immediately.
   invocation at a time), matching single-instance Lambda semantics.
 - Route or name collisions never prevent startup: healthy functions keep
   serving and the colliding route answers `409` naming the competitors.
-- API Gateway v1 (`payload: "1.0"`) events and `Dockerfile`-based functions
-  are not supported yet — see `CURRENT_ISSUES.md` for the tracked backlog.
+- `url.payload: "1.0"` selects API Gateway REST API events per function
+  instead of the `"2.0"` default; a function with a `Dockerfile` and no
+  `runtime`/`local.image` is built automatically (via `docker build`) on
+  every start, including hot reload.
+- `.lambdary/lock` pins the container backend's image digests on first
+  start — commit it alongside your functions for reproducible starts across
+  machines.
 
 `DESIGN.md` documents the architecture; `plans/` holds the per-milestone
 implementation plans; `CHANGELOG.md` tracks user-facing changes.

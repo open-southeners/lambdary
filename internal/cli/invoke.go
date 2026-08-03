@@ -15,6 +15,7 @@ import (
 
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/lockfile"
 )
 
 // serverProbeTimeout bounds how long invoke waits for a dev server's GET /
@@ -107,7 +108,12 @@ func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root
 		return err
 	}
 
-	return invokeStandalone(ctx, out, errOut, fn, event, backendFlag)
+	lock, err := lockfile.Load(root)
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: ignoring corrupt .lambdary/lock: %s\n", err)
+	}
+
+	return invokeStandalone(ctx, out, errOut, fn, event, backendFlag, lock)
 }
 
 // resolveEvent reads the invoke payload from source: a JSON file path,
@@ -197,9 +203,10 @@ func invokeServer(ctx context.Context, out, errOut io.Writer, port int, name str
 // resolveBackend), starts fn's backend just for this one call, POSTs event
 // to it, prints the response to out, and stops the instance again — via
 // defer, so Stop runs on every path once Start succeeds, including invoke
-// errors.
-func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.Function, event []byte, backendFlag string) error {
-	b, _, err := resolveBackend(ctx, backendFlag, backend.ExecRunner{}, errOut)
+// errors. lock (nil-able) is threaded into resolveBackend for image-digest
+// pinning/recording, per plans/m5-extras.md's Unit C.
+func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.Function, event []byte, backendFlag string, lock *lockfile.Lock) error {
+	b, _, err := resolveBackend(ctx, backendFlag, backend.ExecRunner{}, errOut, lock)
 	if err != nil {
 		return err
 	}

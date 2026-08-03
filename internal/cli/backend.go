@@ -9,6 +9,7 @@ import (
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/backend/container"
 	"github.com/open-southeners/lambdary/internal/backend/process"
+	"github.com/open-southeners/lambdary/internal/lockfile"
 	"github.com/open-southeners/lambdary/internal/rie"
 )
 
@@ -29,50 +30,76 @@ func validateBackend(v string) error {
 // `dev` (runDev) and `invoke`'s standalone mode (invokeStandalone), per
 // plans/m3-process-path.md's Unit C. It returns the backend along with a
 // human-readable, already-formatted name for the startup/summary output
-// ("container (docker)", "process (host runtimes)", ...).
+// ("container (docker)", "process (host runtimes)", ...). lock is the
+// project's `.lambdary/lock` (see internal/lockfile.Load), or nil for
+// callers that don't want digest pinning/recording — see
+// plans/m5-extras.md's Unit C.
 //
-//   - "container": resolves via backend.DetectContainerCLI, or fails.
+//   - "container": resolves via backend.DetectContainerCLI, or fails; the
+//     returned backend pins/records image digests through lock when it's
+//     non-nil (container.NewWithLock), otherwise behaves exactly as before
+//     Unit C (container.New).
 //   - "process": resolves the RIE binary via internal/rie.Resolve (which
 //     itself prints a first-build progress note to stderr — see
 //     rie.Resolve's doc comment) and builds internal/backend/process, or
 //     fails; rie.Resolve's own errors (including ErrBuildToolsMissing) are
-//     surfaced as-is, since they already name the remedy.
+//     surfaced as-is, since they already name the remedy. On success, and
+//     when lock is non-nil, records the resolved rie.Version into the lock
+//     — informational only, per DESIGN.md's version-pinning decision; a
+//     failure to record is noted on errW rather than failing backend
+//     resolution.
 //   - "auto" (also "", the flag's default): tries container first; on
 //     errors.Is backend.ErrNoContainerCLI or backend.ErrDaemonUnreachable,
 //     prints a single notice to errW and falls back to process. Any other
 //     container-detection error fails outright rather than falling back,
 //     since it isn't one of the "no usable container runtime" cases.
-func resolveBackend(ctx context.Context, mode string, runner backend.Runner, errW io.Writer) (backend.Backend, string, error) {
+func resolveBackend(ctx context.Context, mode string, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (backend.Backend, string, error) {
 	switch mode {
 	case "", "auto":
-		return resolveAutoBackend(ctx, runner, errW)
+		return resolveAutoBackend(ctx, runner, errW, lock)
 	case "container":
-		return resolveContainerBackend(ctx, runner)
+		return resolveContainerBackend(ctx, runner, lock)
 	case "process":
-		return resolveProcessBackend(ctx, runner)
+		return resolveProcessBackend(ctx, runner, errW, lock)
 	default:
 		return nil, "", fmt.Errorf(`unknown --backend %q: want "auto", "container", or "process"`, mode)
 	}
 }
 
 // resolveContainerBackend implements the "container" mode: DetectContainerCLI
-// or fail.
-func resolveContainerBackend(ctx context.Context, runner backend.Runner) (backend.Backend, string, error) {
+// or fail; lock (nil-able) is threaded into container.NewWithLock/New.
+func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *lockfile.Lock) (backend.Backend, string, error) {
 	cli, err := backend.DetectContainerCLI(ctx, runner)
 	if err != nil {
 		return nil, "", err
 	}
 
-	return container.New(cli, runner), fmt.Sprintf("container (%s)", cli), nil
+	var b backend.Backend
+	if lock != nil {
+		b = container.NewWithLock(cli, runner, lock)
+	} else {
+		b = container.New(cli, runner)
+	}
+
+	return b, fmt.Sprintf("container (%s)", cli), nil
 }
 
 // resolveProcessBackend implements the "process" mode: rie.Resolve + build
 // the process backend, or fail (rie.Resolve's error already names the
-// remedy — missing build tools, a bad $LAMBDARY_RIE_PATH, etc.).
-func resolveProcessBackend(ctx context.Context, runner backend.Runner) (backend.Backend, string, error) {
+// remedy — missing build tools, a bad $LAMBDARY_RIE_PATH, etc.). On
+// success, a non-nil lock records rie.Version (SetRIE) — best-effort, per
+// plans/m5-extras.md's Unit C: a recording failure is noted on errW rather
+// than failing backend resolution.
+func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (backend.Backend, string, error) {
 	riePath, err := rie.Resolve(ctx, runner)
 	if err != nil {
 		return nil, "", err
+	}
+
+	if lock != nil {
+		if err := lock.SetRIE(rie.Version); err != nil {
+			fmt.Fprintf(errW, "warning: recording rie version in .lambdary/lock: %s\n", err)
+		}
 	}
 
 	return process.New(riePath, runner), "process (host runtimes)", nil
@@ -83,8 +110,8 @@ func resolveProcessBackend(ctx context.Context, runner backend.Runner) (backend.
 // runtime simply isn't usable (no CLI on PATH, or a CLI present but its
 // daemon unreachable) — any other error (e.g. a mode="process" fallback
 // itself failing to resolve the RIE) is returned as-is.
-func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writer) (backend.Backend, string, error) {
-	b, name, err := resolveContainerBackend(ctx, runner)
+func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (backend.Backend, string, error) {
+	b, name, err := resolveContainerBackend(ctx, runner, lock)
 	if err == nil {
 		return b, name, nil
 	}
@@ -95,5 +122,5 @@ func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writ
 
 	fmt.Fprintf(errW, "no usable container runtime (%s) — falling back to the process backend using host runtimes\n", err)
 
-	return resolveProcessBackend(ctx, runner)
+	return resolveProcessBackend(ctx, runner, errW, lock)
 }

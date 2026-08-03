@@ -18,6 +18,7 @@ import (
 
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/lockfile"
 	"github.com/open-southeners/lambdary/internal/manifest"
 	"github.com/open-southeners/lambdary/internal/router"
 	"github.com/open-southeners/lambdary/internal/watcher"
@@ -123,7 +124,12 @@ func (d *devServer) run(ctx context.Context) error {
 		return err
 	}
 
-	b, backendName, err := resolveBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut)
+	lock, err := lockfile.Load(d.root)
+	if err != nil {
+		fmt.Fprintf(d.errOut, "warning: ignoring corrupt .lambdary/lock: %s\n", err)
+	}
+
+	b, backendName, err := resolveBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock)
 	if err != nil {
 		return err
 	}

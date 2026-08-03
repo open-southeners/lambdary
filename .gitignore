@@ -1,5 +1,12 @@
 /lambdary
-.lambdary/
+
+# .lambdary/ holds per-project local state (RIE cache, etc.) — ignored
+# except the lock file, which is meant to be committed for reproducible
+# digest pinning (DESIGN.md's version-pinning decision). A trailing-slash
+# dir ignore can't be re-included by a later negation, per git's own
+# semantics, hence the "/*" form here.
+.lambdary/*
+!.lambdary/lock
 
 # Go
 *.test

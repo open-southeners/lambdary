@@ -61,11 +61,12 @@ func TestE2E(t *testing.T) {
 		t.Fatalf("discovery.Discover() unexpected error: %v", err)
 	}
 	// testdata/demo also holds node-hello (added for TestE2EProcessBackend,
-	// below); it's discovered here too since both tests share the fixture
-	// root, but this test never starts or asserts on it — only hello and
+	// below) and v1-echo (added for the same test's payload-1.0 coverage);
+	// both are discovered here too since every e2e test shares the fixture
+	// root, but this test never starts or asserts on them — only hello and
 	// shaped, same as before.
-	if len(fns) != 3 {
-		t.Fatalf("discovered %d functions, want 3 (hello, shaped, node-hello): %+v", len(fns), fns)
+	if len(fns) != 4 {
+		t.Fatalf("discovered %d functions, want 4 (hello, shaped, node-hello, v1-echo): %+v", len(fns), fns)
 	}
 
 	cli, err := backend.DetectContainerCLI(context.Background(), runner)
@@ -266,13 +267,15 @@ func TestE2E(t *testing.T) {
 
 // TestE2EProcessBackend is TestE2E's Docker-free companion: the same
 // testdata/demo fixture root (hello, shaped — both python) plus node-hello
-// (the process backend's Node shim's own fixture, added for this test), all
-// driven through internal/backend/process against host-installed node and
-// python3 instead of a container runtime, per plans/m3-process-path.md's
-// Unit C. It proves the process backend end to end for both languages it
-// supports (see internal/backend/process's package doc) — the Node shim in
-// particular has no other end-to-end coverage, since internal/backend/
-// process's own tests only exercise it against a fake RIE.
+// (the process backend's Node shim's own fixture, added for this test) and
+// v1-echo (a payload "1.0" python fixture, added for plans/m5-extras.md's
+// Unit D), all driven through internal/backend/process against
+// host-installed node and python3 instead of a container runtime, per
+// plans/m3-process-path.md's Unit C. It proves the process backend end to
+// end for both languages it supports (see internal/backend/process's
+// package doc) — the Node shim in particular has no other end-to-end
+// coverage, since internal/backend/process's own tests only exercise it
+// against a fake RIE.
 //
 // process backend functions run on whatever runtime versions are installed
 // on this host (this repo's dev host: node v24, python 3.14 — see
@@ -315,8 +318,8 @@ func TestE2EProcessBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discovery.Discover() unexpected error: %v", err)
 	}
-	if len(fns) != 3 {
-		t.Fatalf("discovered %d functions, want 3 (hello, shaped, node-hello): %+v", len(fns), fns)
+	if len(fns) != 4 {
+		t.Fatalf("discovered %d functions, want 4 (hello, shaped, node-hello, v1-echo): %+v", len(fns), fns)
 	}
 
 	baseline := countRIEProcesses(t)
@@ -475,6 +478,53 @@ func TestE2EProcessBackend(t *testing.T) {
 
 		if got := result.Echo.QueryStringParameters["y"]; got != "2" {
 			t.Errorf("echo.queryStringParameters[y] = %q, want %q (full body: %s)", got, "2", body)
+		}
+	})
+
+	t.Run("v1-echo returns an API Gateway REST API (payload 1.0) event", func(t *testing.T) {
+		resp, err := client.Get(srv.URL + "/v1-echo/sub?a=1&a=2")
+		if err != nil {
+			t.Fatalf("GET %s/v1-echo/sub: %v", srv.URL, err)
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("reading response body: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, body)
+		}
+
+		var result struct {
+			Echo struct {
+				Version                         string              `json:"version"`
+				HTTPMethod                      string              `json:"httpMethod"`
+				Path                            string              `json:"path"`
+				QueryStringParameters           map[string]string   `json:"queryStringParameters"`
+				MultiValueQueryStringParameters map[string][]string `json:"multiValueQueryStringParameters"`
+			} `json:"echo"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			t.Fatalf("unmarshalling response body %q: %v", body, err)
+		}
+
+		ev := result.Echo
+		if ev.Version != "" {
+			t.Errorf("event version = %q, want absent (v1 events have no top-level version field)", ev.Version)
+		}
+		if ev.HTTPMethod != http.MethodGet {
+			t.Errorf("event httpMethod = %q, want %q", ev.HTTPMethod, http.MethodGet)
+		}
+		if ev.Path != "/sub" {
+			t.Errorf("event path = %q, want %q (route prefix stripped)", ev.Path, "/sub")
+		}
+		if got, want := ev.MultiValueQueryStringParameters["a"], []string{"1", "2"}; !containsString(got, "1") || !containsString(got, "2") || len(got) != len(want) {
+			t.Errorf("event multiValueQueryStringParameters[a] = %v, want %v", got, want)
+		}
+		if got := ev.QueryStringParameters["a"]; got != "2" {
+			t.Errorf("event queryStringParameters[a] = %q, want %q (last wins)", got, "2")
 		}
 	})
 
