@@ -1,9 +1,11 @@
 // Package event implements a pure, stdlib-only mapping between Go's
-// net/http request/response types and the AWS Lambda Function URL / API
-// Gateway v2 ("2.0") JSON event format, per DESIGN.md's "Routing & event
-// mapping" section and plans/m2-http-events.md's Unit A. It does no HTTP
-// serving of its own — the router owns dispatch; this package only
-// translates in both directions (FromHTTP, ToHTTP).
+// net/http request/response types and AWS Lambda's JSON event formats: the
+// Lambda Function URL / API Gateway v2 ("2.0") format (FromHTTP, ToHTTP; per
+// DESIGN.md's "Routing & event mapping" section and plans/m2-http-events.md's
+// Unit A) and the API Gateway REST API ("1.0") format (FromHTTPV1, ToHTTPV1;
+// per plans/m5-extras.md's Unit A). It does no HTTP serving of its own — the
+// router owns dispatch and picks the pair to use per function; this package
+// only translates in both directions.
 package event
 
 import (
