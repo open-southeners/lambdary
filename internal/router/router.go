@@ -24,16 +24,20 @@ const (
 	invokeSuffix = "/invocations"
 )
 
-// supportedPayload is the only Function URL / API Gateway event payload
-// format M2 implements — see plans/m2-http-events.md's scope decision. A
-// manifest that explicitly asks for a different format (in practice,
-// "1.0") gets a 501 naming the limitation rather than silently mismapping
-// its events.
-const supportedPayload = "2.0"
+// payloadV2 and payloadV1 are the two Function URL / API Gateway event
+// payload formats handleRoute maps to an event type: payloadV2 (the
+// default — Lambda Function URL / HTTP API "2.0") via event.FromHTTP/
+// event.ToHTTP, and payloadV1 (API Gateway REST API "1.0") via
+// event.FromHTTPV1/event.ToHTTPV1. A manifest that explicitly asks for
+// anything else gets a 501 naming both supported values.
+const (
+	payloadV2 = "2.0"
+	payloadV1 = "1.0"
+)
 
 // unsupportedPayloadMessage is the 501 body for a function route whose
-// manifest requests a payload format other than supportedPayload.
-const unsupportedPayloadMessage = "payload format %s is not yet supported — see CURRENT_ISSUES.md"
+// manifest requests a payload format the router doesn't understand.
+const unsupportedPayloadMessage = `payload format %s is not supported — supported values are "2.0" and "1.0"`
 
 // Router is the http.Handler router.New returns. It holds no global state:
 // every dependency (the Manager, the discovered functions) is injected by
@@ -248,10 +252,9 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 // handleRoute serves a request matched to one or more functions' Route by
 // matchRoute. More than one match means those functions collide on that
 // route (409, naming competitors). Exactly one match is a genuine
-// function-route hit: build the Function URL v2 event for r, invoke the
-// function the same way the passthrough does (Ensure/lock/timeout, via
-// (*Router).invoke), then translate the raw invoke result back into an
-// HTTP response with event.ToHTTP.
+// function-route hit: dispatch to whichever payload format fn's manifest
+// requests (payloadV2, the default, or payloadV1), or 501 for anything
+// else, naming both supported values.
 func (rt *Router) handleRoute(w http.ResponseWriter, r *http.Request, matched []discovery.Function) {
 	if len(matched) > 1 {
 		writeCollision(w, "route", matched[0].Route, matched)
@@ -260,13 +263,24 @@ func (rt *Router) handleRoute(w http.ResponseWriter, r *http.Request, matched []
 
 	fn := matched[0]
 
-	if payload := payloadVersion(fn); payload != "" && payload != supportedPayload {
+	switch payload := payloadVersion(fn); payload {
+	case "", payloadV2:
+		rt.handleRouteV2(w, r, fn)
+	case payloadV1:
+		rt.handleRouteV1(w, r, fn)
+	default:
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
 			"message": fmt.Sprintf(unsupportedPayloadMessage, payload),
 		})
-		return
 	}
+}
 
+// handleRouteV2 serves fn's route under the Function URL / HTTP API "2.0"
+// payload format (payloadV2): build the v2 event for r, invoke fn the same
+// way the passthrough does (Ensure/lock/timeout, via (*Router).invoke),
+// then translate the raw invoke result back into an HTTP response with
+// event.ToHTTP.
+func (rt *Router) handleRouteV2(w http.ResponseWriter, r *http.Request, fn discovery.Function) {
 	ev, err := event.FromHTTP(r, fn.Route)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -303,6 +317,55 @@ func (rt *Router) handleRoute(w http.ResponseWriter, r *http.Request, matched []
 	if err := event.ToHTTP(w, respBody); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{
 			"message": fmt.Sprintf("malformed function response: %s", err),
+		})
+	}
+}
+
+// handleRouteV1 serves fn's route under the API Gateway REST API "1.0"
+// payload format (payloadV1): the same Ensure/lock/timeout/function-error
+// handling as handleRouteV2, but built from event.FromHTTPV1/
+// event.ToHTTPV1 instead. event.ToHTTPV1 is stricter than event.ToHTTP —
+// there's no "bare JSON -> 200" fallback for an unshaped return value — so
+// a malformed response is reported as 502 naming payload 1.0 specifically,
+// mirroring API Gateway's own behavior for a malformed Lambda proxy
+// response.
+func (rt *Router) handleRouteV1(w http.ResponseWriter, r *http.Request, fn discovery.Function) {
+	ev, err := event.FromHTTPV1(r, fn.Route)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"message": fmt.Sprintf("reading request body: %s", err),
+		})
+		return
+	}
+
+	body, err := json.Marshal(ev)
+	if err != nil {
+		// ev is built entirely from strings/bools this package controls;
+		// Marshal failing here would mean a bug in event.RequestV1 itself,
+		// not bad input, so this is a 500 rather than an upstream problem.
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"message": fmt.Sprintf("encoding request event: %s", err),
+		})
+		return
+	}
+
+	status, respBody, _, err := rt.invoke(r, fn.Name, body)
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+
+	if isFunctionError(status, respBody) {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"message": "function error",
+			"error":   errorPayload(respBody),
+		})
+		return
+	}
+
+	if err := event.ToHTTPV1(w, respBody); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"message": fmt.Sprintf("malformed function response for payload 1.0: %s", err),
 		})
 	}
 }

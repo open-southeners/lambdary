@@ -249,28 +249,111 @@ func TestRouterRouteBinaryRequestRoundTrips(t *testing.T) {
 	}
 }
 
-func TestRouterRoutePayload10Returns501(t *testing.T) {
+func TestRouterRoutePayload10EventMapping(t *testing.T) {
+	b := newFakeBackend()
+	b.newInstance = func(string) *fakeInstance {
+		return newV1EchoInstance(http.StatusOK)
+	}
+
 	legacy := fn("legacy")
 	legacy.Manifest = &manifest.Manifest{URL: manifest.URL{Payload: "1.0"}}
 
 	fns := []discovery.Function{legacy}
-	h := New(NewManager(newFakeBackend(), fns), fns)
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodGet, "/legacy/sub?a=1&a=2", nil)
+	req.Header.Set("X-Custom-Header", "hi")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+
+	var ev event.RequestV1
+	decodeJSON(t, rec, &ev)
+
+	if ev.Path != "/sub" {
+		t.Errorf("path = %q, want %q (route prefix stripped)", ev.Path, "/sub")
+	}
+	if ev.HTTPMethod != http.MethodGet {
+		t.Errorf("httpMethod = %q, want %q", ev.HTTPMethod, http.MethodGet)
+	}
+	if got := ev.MultiValueHeaders["X-Custom-Header"]; len(got) != 1 || got[0] != "hi" {
+		t.Errorf("multiValueHeaders[X-Custom-Header] = %v, want [\"hi\"] (canonical casing preserved, not lowercased)", got)
+	}
+	if _, lowercased := ev.MultiValueHeaders["x-custom-header"]; lowercased {
+		t.Errorf("multiValueHeaders unexpectedly has a lowercased x-custom-header entry, want canonical casing only")
+	}
+	if got, want := ev.PathParameters["proxy"], "sub"; got != want {
+		t.Errorf("pathParameters.proxy = %q, want %q", got, want)
+	}
+	if ev.RequestContext.Identity.SourceIP == "" {
+		t.Errorf("requestContext.identity.sourceIp is empty, want a value")
+	}
+}
+
+func TestRouterRoutePayload10ShapedResponse(t *testing.T) {
+	b := newFakeBackend()
+	b.newInstance = func(string) *fakeInstance {
+		shaped := `{"statusCode":201,"headers":{"X-Extra":"yes"},"multiValueHeaders":{"X-Multi":["a","b"]},"body":"hello"}`
+		return newFakeInstance(http.StatusOK, []byte(shaped), "application/json", 0)
+	}
+
+	legacy := fn("legacy")
+	legacy.Manifest = &manifest.Manifest{URL: manifest.URL{Payload: "1.0"}}
+
+	fns := []discovery.Function{legacy}
+	h := New(NewManager(b, fns), fns)
 
 	req := httptest.NewRequest(http.MethodGet, "/legacy", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Header().Get("X-Extra"), "yes"; got != want {
+		t.Errorf("X-Extra = %q, want %q", got, want)
+	}
+	if got, want := rec.Header().Values("X-Multi"), []string{"a", "b"}; !equalStrings(got, want) {
+		t.Errorf("X-Multi = %v, want %v (multiValueHeaders merged additively)", got, want)
+	}
+	if got, want := rec.Body.String(), "hello"; got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestRouterRoutePayload10StrictMalformedResponseIs502(t *testing.T) {
+	b := newFakeBackend()
+	b.newInstance = func(string) *fakeInstance {
+		// An unshaped return value: v2's ToHTTP would fall back to a bare
+		// 200 JSON body, but v1's ToHTTPV1 requires a statusCode and has no
+		// such fallback.
+		return newEchoInstance(http.StatusOK)
+	}
+
+	legacy := fn("legacy")
+	legacy.Manifest = &manifest.Manifest{URL: manifest.URL{Payload: "1.0"}}
+
+	fns := []discovery.Function{legacy}
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodGet, "/legacy", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body = %s", rec.Code, rec.Body.String())
 	}
 
 	var payload struct {
 		Message string `json:"message"`
 	}
 	decodeJSON(t, rec, &payload)
-	want := "payload format 1.0 is not yet supported — see CURRENT_ISSUES.md"
-	if payload.Message != want {
-		t.Errorf("message = %q, want %q", payload.Message, want)
+	if !strings.Contains(payload.Message, "payload 1.0") {
+		t.Errorf("message = %q, want it to name payload 1.0", payload.Message)
 	}
 }
 
@@ -292,6 +375,31 @@ func TestRouterRoutePayload20Works(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRouterRouteUnsupportedPayloadReturns501(t *testing.T) {
+	future := fn("future")
+	future.Manifest = &manifest.Manifest{URL: manifest.URL{Payload: "3.0"}}
+
+	fns := []discovery.Function{future}
+	h := New(NewManager(newFakeBackend(), fns), fns)
+
+	req := httptest.NewRequest(http.MethodGet, "/future", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501; body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Message string `json:"message"`
+	}
+	decodeJSON(t, rec, &payload)
+	want := `payload format 3.0 is not supported — supported values are "2.0" and "1.0"`
+	if payload.Message != want {
+		t.Errorf("message = %q, want %q", payload.Message, want)
 	}
 }
 

@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -112,6 +113,16 @@ type fakeInstance struct {
 	// need to inspect the JSON event the router actually sent, without a
 	// second server hop to capture it.
 	echo bool
+	// v1Echo is echo's payload-1.0 counterpart: handle wraps the exact body
+	// it received in a shaped v1 response (statusCode + body) instead of
+	// replying with it directly, since event.ToHTTPV1 requires a shaped
+	// response and has no bare-JSON fallback the way v2's echo relies on.
+	v1Echo bool
+	// v1StatusCode is the shaped response's own "statusCode" field when
+	// v1Echo is true — deliberately independent of status (the fake
+	// server's raw HTTP status), matching how the real RIE always answers
+	// HTTP 200 with the shaped statusCode carried inside the JSON body.
+	v1StatusCode int
 
 	active    int32
 	maxActive int32
@@ -132,6 +143,18 @@ func newFakeInstance(status int, body []byte, contentType string, sleep time.Dur
 // with the exact request body it received, under status.
 func newEchoInstance(status int) *fakeInstance {
 	fi := &fakeInstance{status: status, echo: true}
+	fi.srv = httptest.NewServer(http.HandlerFunc(fi.handle))
+
+	return fi
+}
+
+// newV1EchoInstance returns a fakeInstance that replies to every invocation
+// with a shaped v1 response (statusCode: statusCode) whose body is the
+// exact JSON event it received, serialized back out as a string — the
+// payload-1.0 counterpart to newEchoInstance, letting router v1 tests
+// inspect the event.RequestV1 FromHTTPV1 built without a second server hop.
+func newV1EchoInstance(statusCode int) *fakeInstance {
+	fi := &fakeInstance{status: http.StatusOK, v1Echo: true, v1StatusCode: statusCode}
 	fi.srv = httptest.NewServer(http.HandlerFunc(fi.handle))
 
 	return fi
@@ -166,8 +189,15 @@ func (fi *fakeInstance) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respBody := fi.body
-	if fi.echo {
+	switch {
+	case fi.echo:
 		respBody = reqBody
+	case fi.v1Echo:
+		shaped, _ := json.Marshal(map[string]any{ //nolint:errcheck // test double: map[string]any{int, string} always marshals.
+			"statusCode": fi.v1StatusCode,
+			"body":       string(reqBody),
+		})
+		respBody = shaped
 	}
 
 	if fi.contentType != "" {
