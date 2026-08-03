@@ -1,0 +1,88 @@
+# CI — runs on every push to main and every pull request targeting main.
+#
+# Jobs:
+#   - fmt:         `gofmt -l .` must report nothing; fails with the offending
+#                   file list if it does.
+#   - vet:         `go vet ./...`.
+#   - test:        ubuntu-latest, full suite (`go test ./... -count=1`).
+#                   ubuntu-latest runners ship Docker + node + python3 + git,
+#                   so the container backend, the process-backend RIE tests,
+#                   and the e2e tests actually exercise those paths instead
+#                   of being skipped.
+#   - test-macos:  macos-latest, `go test ./... -short -count=1` for darwin
+#                   coverage. macOS runners have no Docker, so `-short` skips
+#                   the Docker-gated and RIE-network-gated (and therefore
+#                   also e2e) tests rather than failing on missing tooling.
+#
+# This workflow has not yet had a real run on GitHub Actions — its first
+# execution will be the push/PR that introduces it. Validated locally with
+# `go run github.com/rhysd/actionlint/cmd/actionlint@latest` and a manual
+# `-short` test run before landing.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then
+            echo "gofmt found unformatted files:"
+            echo "$files"
+            exit 1
+          fi
+
+  vet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: go vet
+        run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Full suite: the process-backend RIE integration test clones and
+      # builds the Runtime Interface Emulator from GitHub (needs network),
+      # and Docker-gated tests use the runner's own Docker daemon.
+      - name: go test
+        run: go test ./... -count=1
+
+  test-macos:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # darwin coverage; -short skips Docker-gated, RIE-network, and e2e
+      # tests since macos-latest runners have no Docker.
+      - name: go test (short)
+        run: go test ./... -short -count=1
