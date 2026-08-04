@@ -3,10 +3,12 @@
 // process, spawns per function), per DESIGN.md's "Process backend" section
 // and plans/m3-process-path.md's Unit A. AWS only ships Linux binaries, so
 // on other platforms (this repo's own dev host: darwin/arm64, per
-// plans/rie-darwin-spike.md) Resolve builds the pinned upstream tag from
-// source and caches the result — go:embed-ing a prebuilt binary into
-// Lambdary releases needs a release pipeline that doesn't exist yet
-// (CURRENT_ISSUES.md).
+// plans/rie-darwin-spike.md) Resolve falls back to building the pinned
+// upstream tag from source and caching the result. Release binaries carry a
+// prebuilt copy via go:embed (see embedded.go, embedded_stub.go, and
+// plans/m7-rie-embedding.md), so end users never hit the build-from-source
+// path at all; `go install`/plain `go build` don't have that embedded
+// payload and keep relying on it.
 package rie
 
 import (
@@ -26,6 +28,10 @@ import (
 // Version is the upstream aws-lambda-runtime-interface-emulator tag Resolve
 // builds and caches. Bumping it changes the cache filename (see cachePath),
 // so a version bump never serves a stale binary out of an old cache.
+//
+// WARNING: .github/workflows/release.yml greps this exact `const Version =
+// "..."` line to learn which upstream tag to clone and embed (see that
+// workflow's binaries job) — keep the declaration on one line in this form.
 const Version = "v1.35"
 
 // repoURL is the upstream repository Resolve shallow-clones at Version when
@@ -52,21 +58,26 @@ const (
 var ErrBuildToolsMissing = errors.New("rie: build tools missing")
 
 // Resolve returns the path to a runnable aws-lambda-rie binary, acquiring
-// one via the chain documented in plans/m3-process-path.md:
+// one via the chain documented in plans/m3-process-path.md (extended by
+// plans/m7-rie-embedding.md):
 //
 //  1. $LAMBDARY_RIE_PATH, if set, is used as-is (after verifying it exists
 //     and is executable).
 //  2. The per-version, per-platform cache under $LAMBDARY_HOME/bin (default
 //     ~/.lambdary/bin), if already populated.
-//  3. A shallow clone of the pinned upstream tag, built from source with
+//  3. The binary embedded at release-build time (embeddedRIE), if any —
+//     written into the same cache path step 2 checks and returned, so the
+//     next Resolve call is a cache hit. Nil on dev builds (go install, plain
+//     go build), so this step is a no-op there.
+//  4. A shallow clone of the pinned upstream tag, built from source with
 //     `go build` and cached for next time.
 //
 // External commands the build step needs (git, go) go through runner so
 // callers can substitute a fake in tests, per internal/backend's Runner
 // convention — the freshly built binary itself is never executed as part
-// of Resolve (see verifyBuiltFile). Resolve never shells out for step 1 or
-// a cache hit (step 2), so tests can assert those paths issue zero runner
-// calls.
+// of Resolve (see verifyBuiltFile). Resolve never shells out for step 1, a
+// cache hit (step 2), or an embedded extract (step 3), so tests can assert
+// those paths issue zero runner calls.
 func Resolve(ctx context.Context, runner backend.Runner) (string, error) {
 	if override := os.Getenv(envRIEPath); override != "" {
 		return resolveOverride(override)
@@ -81,7 +92,57 @@ func Resolve(ctx context.Context, runner backend.Runner) (string, error) {
 		return cache, nil
 	}
 
+	if len(embeddedRIE) > 0 {
+		return extractEmbedded(cache)
+	}
+
 	return build(ctx, runner, cache)
+}
+
+// extractEmbedded implements acquisition step 3: write the release build's
+// embedded aws-lambda-rie payload to cache and return that path. The write
+// is atomic (temp file in cache's own directory, then rename) so a process
+// killed mid-write never leaves a corrupt file behind for the next Resolve
+// call's cache-hit check to serve.
+func extractEmbedded(cache string) (string, error) {
+	// Printed unconditionally (not just on a TTY), mirroring build's
+	// first-run notice, so a dev watching plain stderr output during the
+	// first `lambdary dev`/`invoke` run sees why there's a brief pause.
+	fmt.Fprintf(os.Stderr, "extracting embedded AWS Lambda runtime emulator %s...\n", Version)
+
+	dir := filepath.Dir(cache)
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("rie: creating cache directory: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dir, ".aws-lambda-rie-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("rie: creating temp file for embedded binary: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	defer os.Remove(tmpPath) //nolint:errcheck // best-effort cleanup; no-op once the rename below succeeds
+
+	if _, err := tmp.Write(embeddedRIE); err != nil {
+		tmp.Close() //nolint:errcheck // already failing; original error takes priority
+
+		return "", fmt.Errorf("rie: writing embedded binary: %w", err)
+	}
+
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("rie: writing embedded binary: %w", err)
+	}
+
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		return "", fmt.Errorf("rie: making embedded binary executable: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, cache); err != nil {
+		return "", fmt.Errorf("rie: installing embedded binary into cache: %w", err)
+	}
+
+	return cache, nil
 }
 
 // resolveOverride implements acquisition step 1: $LAMBDARY_RIE_PATH must

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Prebuilt `lambdary` binaries for Linux and macOS (amd64 + arm64) are now
   attached to every GitHub release, with SHA-256 checksums, and release
   notes are generated automatically from this changelog.
+- Release binaries now bundle AWS's Lambda Runtime Interface Emulator, so
+  the process backend works out of the box with no `git`/`go` required
+  (source builds via `go install` keep the build-from-source fallback).
 - **Function discovery**: every direct subdirectory of the project root that
   contains a `.lambda.yml` or a recognizable project file (`package.json`,
   `composer.json`, `pyproject.toml`/`requirements.txt`, `go.mod`, `Gemfile`,

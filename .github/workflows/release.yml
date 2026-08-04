@@ -89,13 +89,50 @@ jobs:
         run: |
           set -euo pipefail
 
+          # internal/rie/rie.go's Version const is the single source of
+          # truth for the upstream RIE tag embedded below — see the WARNING
+          # comment next to that const for why this grep must keep matching
+          # its exact declaration form.
+          RIE_VERSION="$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/rie/rie.go)"
+          if [ -z "${RIE_VERSION}" ]; then
+            echo "::error::could not extract rie.Version from internal/rie/rie.go — grep pattern out of sync?"
+            exit 1
+          fi
+
+          rie_src="$(mktemp -d)"
+          git clone --depth 1 --branch "${RIE_VERSION}" \
+            https://github.com/aws/aws-lambda-runtime-interface-emulator "${rie_src}"
+
+          embedded_path="internal/rie/embedded/aws-lambda-rie"
+
           for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             GOOS="${pair%/*}"
             GOARCH="${pair#*/}"
             outdir="dist/${GOOS}_${GOARCH}"
             mkdir -p "${outdir}"
 
-            CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build -trimpath \
+            # Rebuild the embedded RIE payload fresh for this target and
+            # remove any prior target's copy first, so a stale binary for
+            # the wrong GOOS/GOARCH can never leak into this build.
+            rm -f "${embedded_path}"
+            (cd "${rie_src}" && CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" GOTOOLCHAIN=auto \
+              go build -o "${GITHUB_WORKSPACE}/${embedded_path}" ./cmd/aws-lambda-rie)
+
+            if [ ! -s "${embedded_path}" ]; then
+              echo "::error::${embedded_path} missing or empty after building RIE for ${GOOS}/${GOARCH}"
+              exit 1
+            fi
+
+            # Native-only cross-check that the embed actually happened:
+            # runs against the just-built embedded_path, so it must happen
+            # before the loop moves on and rebuilds it for the next target.
+            # This is the linux/amd64 iteration on this ubuntu-latest
+            # runner, so the compiled test binary itself is runnable here.
+            if [ "${GOOS}/${GOARCH}" = "linux/amd64" ]; then
+              go test -tags embedrie -run TestEmbeddedPayloadPresent ./internal/rie/
+            fi
+
+            CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build -trimpath -tags embedrie \
               -ldflags "-s -w -X github.com/open-southeners/lambdary/internal/cli.version=${VERSION}" \
               -o "${outdir}/lambdary" ./cmd/lambdary
 
@@ -104,6 +141,9 @@ jobs:
             tar -czf "dist/lambdary_${VERSION}_${GOOS}_${GOARCH}.tar.gz" \
               -C "${outdir}" lambdary README.md CHANGELOG.md
           done
+
+          rm -f "${embedded_path}"
+          rm -rf "${rie_src}"
 
           actual_version="$(dist/linux_amd64/lambdary --version)"
           case "${actual_version}" in

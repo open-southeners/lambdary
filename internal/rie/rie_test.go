@@ -142,6 +142,164 @@ func TestResolveCacheHit(t *testing.T) {
 	}
 }
 
+// setEmbedded points the package-level embeddedRIE var (normally populated
+// by go:embed under the embedrie build tag; see embedded.go/
+// embedded_stub.go) at payload for the duration of the calling test,
+// restoring the previous value (nil, since these tests don't build with
+// -tags embedrie) via t.Cleanup.
+func setEmbedded(t *testing.T, payload []byte) {
+	t.Helper()
+
+	prev := embeddedRIE
+	embeddedRIE = payload
+
+	t.Cleanup(func() { embeddedRIE = prev })
+}
+
+func TestResolveEmbeddedExtract(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(envHome, home)
+	t.Setenv(envRIEPath, "")
+
+	setEmbedded(t, []byte("embedded rie payload"))
+
+	got, err := Resolve(context.Background(), failOnAnyCall(t))
+	if err != nil {
+		t.Fatalf("Resolve() unexpected error: %v", err)
+	}
+
+	wantCache := filepath.Join(home, "bin", fmt.Sprintf("aws-lambda-rie-%s-%s-%s", Version, runtime.GOOS, runtime.GOARCH))
+	if got != wantCache {
+		t.Errorf("Resolve() = %q, want %q", got, wantCache)
+	}
+
+	info, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("os.Stat(%s) unexpected error: %v", got, err)
+	}
+
+	if info.Mode()&0o111 == 0 {
+		t.Errorf("extracted binary mode = %v, want executable", info.Mode())
+	}
+
+	content, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%s) unexpected error: %v", got, err)
+	}
+
+	if string(content) != "embedded rie payload" {
+		t.Errorf("extracted binary content = %q, want the embedded payload", content)
+	}
+}
+
+// TestResolveEmbeddedThenCacheHit asserts the extract step 3 writes into the
+// same cache step 2 reads: a second Resolve call must be a plain cache hit
+// (mtime unchanged, runner never consulted at all, extraction never
+// repeated) rather than re-extracting the embedded payload every time.
+func TestResolveEmbeddedThenCacheHit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(envHome, home)
+	t.Setenv(envRIEPath, "")
+
+	setEmbedded(t, []byte("embedded rie payload"))
+
+	first, err := Resolve(context.Background(), failOnAnyCall(t))
+	if err != nil {
+		t.Fatalf("Resolve() unexpected error: %v", err)
+	}
+
+	info, err := os.Stat(first)
+	if err != nil {
+		t.Fatalf("os.Stat(%s) unexpected error: %v", first, err)
+	}
+
+	firstModTime := info.ModTime()
+
+	second, err := Resolve(context.Background(), failOnAnyCall(t))
+	if err != nil {
+		t.Fatalf("second Resolve() unexpected error: %v", err)
+	}
+
+	if second != first {
+		t.Errorf("second Resolve() = %q, want %q (same cached path)", second, first)
+	}
+
+	info2, err := os.Stat(second)
+	if err != nil {
+		t.Fatalf("os.Stat(%s) unexpected error: %v", second, err)
+	}
+
+	if !info2.ModTime().Equal(firstModTime) {
+		t.Errorf("cached binary mtime changed from %v to %v — second Resolve() re-extracted instead of hitting the cache", firstModTime, info2.ModTime())
+	}
+}
+
+// TestResolveEnvOverrideWinsOverEmbedded asserts the acquisition chain's
+// precedence: $LAMBDARY_RIE_PATH (step 1) is honored even when an embedded
+// payload (step 3) is also available.
+func TestResolveEnvOverrideWinsOverEmbedded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "aws-lambda-rie")
+
+	if err := os.WriteFile(path, []byte("override binary"), 0o755); err != nil {
+		t.Fatalf("os.WriteFile() unexpected error: %v", err)
+	}
+
+	t.Setenv(envRIEPath, path)
+	t.Setenv(envHome, t.TempDir())
+
+	setEmbedded(t, []byte("embedded rie payload"))
+
+	got, err := Resolve(context.Background(), failOnAnyCall(t))
+	if err != nil {
+		t.Fatalf("Resolve() unexpected error: %v", err)
+	}
+
+	if got != path {
+		t.Errorf("Resolve() = %q, want %q (env override)", got, path)
+	}
+}
+
+// TestResolveCacheWinsOverEmbedded asserts the acquisition chain's other
+// precedence: a pre-existing cache entry (step 2) is served as-is and never
+// overwritten by the embedded payload (step 3), even when both are present.
+func TestResolveCacheWinsOverEmbedded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(envHome, home)
+	t.Setenv(envRIEPath, "")
+
+	name := fmt.Sprintf("aws-lambda-rie-%s-%s-%s", Version, runtime.GOOS, runtime.GOARCH)
+	cached := filepath.Join(home, "bin", name)
+
+	if err := os.MkdirAll(filepath.Dir(cached), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll() unexpected error: %v", err)
+	}
+
+	if err := os.WriteFile(cached, []byte("pre-existing cached binary"), 0o755); err != nil {
+		t.Fatalf("os.WriteFile() unexpected error: %v", err)
+	}
+
+	setEmbedded(t, []byte("embedded rie payload"))
+
+	got, err := Resolve(context.Background(), failOnAnyCall(t))
+	if err != nil {
+		t.Fatalf("Resolve() unexpected error: %v", err)
+	}
+
+	if got != cached {
+		t.Errorf("Resolve() = %q, want %q", got, cached)
+	}
+
+	content, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%s) unexpected error: %v", got, err)
+	}
+
+	if string(content) != "pre-existing cached binary" {
+		t.Errorf("cached binary content = %q, want the pre-existing cache to be left untouched, not overwritten by the embedded payload", content)
+	}
+}
+
 // outPathPattern extracts the -o argument out.go build's -o <path>
 // interpolates into the `sh -c` command build issues, so the fake can
 // create that exact file itself instead of actually invoking git/go.

@@ -23,3 +23,7 @@ __pycache__/
 
 # Release build output (CI writes here; local dry-runs of the release loop too)
 /dist/
+
+# Per-target RIE binary CI places here before an embedrie build (see
+# internal/rie/embedded/README.md) — never committed, README stays tracked.
+/internal/rie/embedded/aws-lambda-rie
