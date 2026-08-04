@@ -193,7 +193,7 @@ binary built from pinned upstream source:
   `aws-lambda-ric`/`awslambdaric` both carry native C/C++ components that
   would require per-function compile toolchains, exactly the friction this
   project exists to remove. The Runtime API is small and frozen, so the shim
-  surface is ~50 lines per language. Custom runtimes (`provided.*`) run the
+  surface is ~120 lines per language. Custom runtimes (`provided.*`) run the
   function's own `bootstrap` directly; `local.command` overrides everything
   when a project wants the real RIC or anything else.
 - **M0 spike (required):** verify the pinned RIE tag cross-compiles and runs
@@ -256,7 +256,7 @@ internal/backend/        # backend.go (interface), container/, process/
 internal/rie/            # vendored RIE binary management (go:embed, extraction, supervision)
 internal/router/         # http server, event mapping
 internal/watcher/
-internal/logging/
+internal/cli/logs.go      # log multiplexing (folded into cli rather than its own package)
 ```
 
 Key dependencies: `spf13/cobra`, `fsnotify/fsnotify`, `goccy/go-yaml` (or
@@ -296,8 +296,9 @@ can come later if we need event streams.
   logic, and the same transparency applies to any other custom-runtime
   framework.
 - **Version pinning:** yes — a `.lambdary/lock` file pins container image
-  digests, RIC versions, and the vendored RIE tag for reproducible dev
-  environments.
+  digests and the vendored RIE tag for reproducible dev environments. (The
+  original wording also pinned "RIC versions"; the M3 shim amendment made
+  that moot — shims are embedded in the `lambdary` binary itself.)
 - **Route collisions:** detected at discovery time, but the binary is
   fail-safe — the dev server never refuses to start over a collision.
   Non-colliding functions serve normally; a warning is logged at startup, and

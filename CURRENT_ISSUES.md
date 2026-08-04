@@ -2,34 +2,56 @@
 
 Discovered during orchestrated work; routed here instead of fixed inline.
 
-## RIE internal Runtime API port defaults to 9001 — collision hazard for M3
-
-- **Where:** future `internal/rie` / process backend (M3); upstream reference:
-  `internal/lambda/rapidcore/sandbox_builder.go` in
-  aws-lambda-runtime-interface-emulator v1.35. Details in
-  `plans/rie-darwin-spike.md`.
-- **What:** the RIE's *internal* Runtime API server defaults to port 9001. If
-  the port Lambdary assigns for the public invoke endpoint
-  (`--runtime-interface-emulator-address`) is also 9001, the RIE panics at
-  startup with "address already in use".
-- **Fix:** when the M3 process backend allocates per-function ephemeral ports,
-  explicitly set both the invoke address and the internal runtime API address
-  (or exclude 9001 from the allocation pool) so the two can never collide.
-
-## RIE binary not embedded in releases (deferred from M3)
-
-- **Where:** `internal/rie`; DESIGN.md "Process backend" (go:embed plan).
-- **What:** M3 acquires the RIE via env override → `~/.lambdary/bin` cache →
-  build-from-source at the pinned tag. Embedding the prebuilt binary in
-  `lambdary` releases needs a release pipeline that doesn't exist yet.
-- **Fix:** when release tooling lands (goreleaser or similar), build
-  `cmd/aws-lambda-rie` per target and embed via `go:embed` as acquisition
-  step 2, keeping the source build as last resort.
-
 ## Process backend limited to Node, Python, and custom runtimes (M3)
 
 - **Where:** `internal/backend/process` runtime table.
-- **What:** other interpreted families (ruby, dotnet, java) have no shim;
-  PHP works only via the custom-runtime `bootstrap` convention.
-- **Fix:** add shims per family as demand appears; each is ~50 lines against
-  the frozen Runtime API.
+- **What:** other interpreted families (ruby, dotnet, java) have no shim, even
+  though discovery detects them (`Gemfile` → `ruby3.3`, `*.csproj` →
+  `dotnet8`); those functions currently run only via the container backend.
+  PHP works via the custom-runtime `bootstrap` convention.
+- **Fix:** add shims per family as demand appears; each is small (~120 lines)
+  against the frozen Runtime API.
+
+## Port-allocation TOCTOU race in the process backend (M3)
+
+- **Where:** `internal/backend/process/ports.go` (`allocatePorts`).
+- **What:** ports are allocated by binding `127.0.0.1:0` and closing before
+  the RIE binds them, leaving a window where another process could grab the
+  port. Acceptable locally; documented in the code comment.
+- **Fix:** only if it ever flakes in practice — retry `Start` on
+  bind-failure, or pass pre-bound listeners if upstream ever supports it.
+
+## `local.backend` is not honored per function (DESIGN gap)
+
+- **Where:** `internal/cli/backend.go` / `dev.go` / `internal/router/manager.go`.
+- **What:** `.lambda.yml`'s `local.backend` is parsed, validated, and shown
+  by `list`, but `dev`/`invoke` resolve ONE global backend for the whole run;
+  a function declaring `local.backend: process` still runs on the globally
+  selected backend. DESIGN.md implies per-function selection.
+- **Fix:** make the Manager hold a per-function backend chosen from the
+  manifest hint (falling back to the globally resolved one for `auto`),
+  constructing both backends lazily only when some function needs them.
+
+## `lambdary logs [fn]` command missing (DESIGN gap)
+
+- **Where:** `internal/cli` (DESIGN.md "CLI surface" lists it; 4 of 5
+  commands exist).
+- **What:** log streaming exists only inside `dev` (`internal/cli/logs.go`);
+  there is no standalone `logs` command to follow a running dev server's
+  function output from another terminal.
+- **Fix:** needs a transport first (e.g. an SSE or plain-text stream endpoint
+  on the dev server, `GET /_lambdary/logs[?fn=]`), then a thin CLI command
+  consuming it; alternatively drop the command from DESIGN if `dev`'s inline
+  streaming is deemed sufficient.
+
+## Compiled non-Dockerfile runtimes are not built before container start (DESIGN gap)
+
+- **Where:** `internal/backend/container`.
+- **What:** DESIGN's "compiled ones rebuild the artifact first" only happens
+  for `Dockerfile` functions (`docker build` each start). A bare `go.mod`
+  (`provided.al2023`) or `*.csproj` (`dotnet8`) function has no
+  compile-the-artifact step — the container just runs whatever binary the
+  developer last built by hand.
+- **Fix:** per-runtime build hooks (e.g. `go build -o bootstrap` in-container
+  or on host) before start/restart, or document that compiled runtimes
+  require a `Dockerfile` or a manual build step.
