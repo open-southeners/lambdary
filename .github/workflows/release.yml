@@ -15,7 +15,7 @@
 #
 # A release REQUIRES a `## [X.Y.Z]` section in CHANGELOG.md for the tagged
 # version, or the release job fails before anything is built or published —
-# see RELEASING.md before tagging.
+# see CONTRIBUTING.md's "Release Process" section before tagging.
 #
 # Retry semantics: safe to re-run after a partial failure. softprops/
 # action-gh-release matches on tag_name and updates the existing release
@@ -62,7 +62,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          echo "::error::CHANGELOG.md has no [${VERSION}] section for this tag — see RELEASING.md"
+          echo "::error::CHANGELOG.md has no [${VERSION}] section for this tag — see CONTRIBUTING.md's Release Process section"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
