@@ -36,6 +36,7 @@
 // spawning it (see plans/rie-darwin-spike.md); this shim only reads it.
 
 import { existsSync } from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -77,6 +78,42 @@ async function postJSON(url, body) {
   await fetch(url, { method: 'POST', body: JSON.stringify(body) });
 }
 
+// nextInvocation long-polls GET .../invocation/next, which the Runtime API
+// deliberately leaves hanging for however long it takes the next
+// invocation to arrive — for a local dev server, that's routinely minutes
+// between manual test requests, unlike a warm production Lambda under
+// steady traffic. This MUST use node:http rather than the global fetch():
+// fetch is backed by undici, whose default Agent applies a 300s
+// headersTimeout with no dependency-free way to raise it (overriding it
+// needs a `dispatcher` built from the `undici` package, which isn't
+// importable without adding it as a real dependency — see this shim's own
+// "dependency-free" design note up top). A fetch() left waiting on this
+// endpoint for 5+ idle minutes throws an uncaught HeadersTimeoutError that
+// crashes the whole runtime process, killing every later invocation until
+// `dev` restarts it. node:http's client has no such default timeout.
+function nextInvocation() {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`${base}/invocation/next`, (res) => {
+      const requestId = res.headers['lambda-runtime-aws-request-id'];
+      const deadlineMs = Number(res.headers['lambda-runtime-deadline-ms']);
+      const chunks = [];
+
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        try {
+          const raw = Buffer.concat(chunks).toString('utf8');
+          resolve({ requestId, deadlineMs, event: raw ? JSON.parse(raw) : {} });
+        } catch (err) {
+          reject(err);
+        }
+      });
+      res.on('error', reject);
+    });
+
+    req.on('error', reject);
+  });
+}
+
 function errorPayload(err) {
   const e = err instanceof Error ? err : new Error(String(err));
 
@@ -98,10 +135,7 @@ try {
 const functionName = process.env.AWS_LAMBDA_FUNCTION_NAME || '';
 
 for (;;) {
-  const next = await fetch(`${base}/invocation/next`);
-  const requestId = next.headers.get('lambda-runtime-aws-request-id');
-  const deadlineMs = Number(next.headers.get('lambda-runtime-deadline-ms'));
-  const event = await next.json();
+  const { requestId, deadlineMs, event } = await nextInvocation();
 
   const context = {
     awsRequestId: requestId,

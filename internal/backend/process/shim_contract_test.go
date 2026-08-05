@@ -64,6 +64,39 @@ func newRuntimeAPIStub(t *testing.T, event []byte, requestID string) (addr strin
 	return strings.TrimPrefix(srv.URL, "http://"), ch
 }
 
+// newDelayedRuntimeAPIStub is newRuntimeAPIStub, except the next endpoint
+// sleeps for delay before writing its response — standing in for the real
+// Runtime API's long poll blocking on an idle dev server, per
+// TestNodeShim's "survives a delayed next() response" case.
+func newDelayedRuntimeAPIStub(t *testing.T, event []byte, requestID string, delay time.Duration) (addr string, captures <-chan capturedRequest) {
+	t.Helper()
+
+	ch := make(chan capturedRequest, 8)
+	capture := func(kind string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body) //nolint:errcheck // best-effort read for a test double; a failure just yields an empty capture.
+			ch <- capturedRequest{kind: kind, body: body}
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/2018-06-01/runtime/invocation/next", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		w.Header().Set("Lambda-Runtime-Aws-Request-Id", requestID)
+		w.Header().Set("Lambda-Runtime-Deadline-Ms", fmt.Sprintf("%d", time.Now().Add(30*time.Second).UnixMilli()))
+		w.Write(event) //nolint:errcheck // writing a canned fixture body to a test ResponseWriter.
+	})
+	mux.HandleFunc("/2018-06-01/runtime/invocation/"+requestID+"/response", capture("response"))
+	mux.HandleFunc("/2018-06-01/runtime/invocation/"+requestID+"/error", capture("error"))
+	mux.HandleFunc("/2018-06-01/runtime/init/error", capture("init/error"))
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	return strings.TrimPrefix(srv.URL, "http://"), ch
+}
+
 // shimProcess is a shim driven as a real child process by startShim.
 type shimProcess struct {
 	out  *bytes.Buffer
@@ -236,6 +269,31 @@ func TestNodeShim(t *testing.T) {
 		}
 
 		assertExitCode(t, waitExit(t, sp), 1)
+	})
+
+	// Regression test for a real bug: the shim used to fetch() the
+	// long-poll GET .../invocation/next, and fetch's undici Agent applies
+	// a 300s headersTimeout by default — the shim would crash with an
+	// uncaught HeadersTimeoutError, killing every later invocation, after
+	// 5 idle minutes between requests (routine for a local dev server).
+	// This can't wait out the real 300s default in a unit test, but it
+	// does prove the shim itself imposes no timeout of its own on a
+	// delayed next() response — node:http's client, unlike fetch, has
+	// none. See bootstrap.mjs's nextInvocation doc comment.
+	t.Run("survives a delayed next() response", func(t *testing.T) {
+		const delay = 3 * time.Second
+
+		addr, captures := newDelayedRuntimeAPIStub(t, []byte(`{"ping":"pong"}`), "req-delayed", delay)
+		startShim(t, node, []string{shim, "handler.handler"}, "testdata/node", addr)
+
+		select {
+		case c := <-captures:
+			if c.kind != "response" {
+				t.Fatalf("captured request kind = %q, want %q (body: %s)", c.kind, "response", c.body)
+			}
+		case <-time.After(delay + 5*time.Second):
+			t.Fatal("timed out waiting for the shim to respond after a delayed next()")
+		}
 	})
 }
 

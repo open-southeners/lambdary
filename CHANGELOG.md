@@ -126,6 +126,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The process backend's Node runtime no longer crashes after ~5 minutes
+  idle between invocations — routine for a local dev server, but fatal
+  for its Runtime API long-poll, which used to run over `fetch()` and hit
+  undici's default 5-minute header timeout. Every invocation after that
+  crash used to fail until `dev` was restarted.
 - A function's own `.lambda.yml` `local: backend` setting is now honored:
   previously `dev`/`invoke` picked one backend for every function, so a
   function declaring `local.backend: process` (to dodge a container-image
