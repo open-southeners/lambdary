@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-05
+
 ### Added
 
 - An `examples/` playground with three ready-to-run functions: a Node.js
