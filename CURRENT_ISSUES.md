@@ -67,23 +67,3 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   accept this combination isn't supported and say so — in `validateInitRuntime`
   / README's backend table — that `provided.*` needs a `Dockerfile` to run on
   the container backend.
-
-## A dead process-backend runtime is never retried, only its symptom (idle timeout) is fixed
-
-- **Where:** `internal/router/manager.go` (`Manager.Ensure`).
-- **What:** `Ensure` caches an instance in `m.instances[name]` the first
-  time it starts one and, on every later call, returns it straight from
-  that map with no liveness check. If the runtime process backing it ever
-  exits on its own (the node shim's 5-minute idle `fetch()` crash fixed
-  above was one real cause; an unhandled promise rejection or any other
-  runtime-side crash would do the same), every subsequent invocation of
-  that function keeps failing with `Runtime.ExitError` — reproduced by
-  hand: after the idle-timeout crash, a second `screenshot-node` request
-  minutes later still failed, even though the underlying bug (the crash
-  itself) was already fixed by then. Restart only happens via
-  `Manager.Restart`, which only `dev`'s watcher calls, on a code change.
-- **Fix:** have `Ensure` (or the instance itself) detect a dead backing
-  process and transparently start a fresh instance instead of returning a
-  stale, unusable URL — closer to real Lambda's behavior, where a crashed
-  execution environment is simply replaced by a new one on the next
-  invocation.

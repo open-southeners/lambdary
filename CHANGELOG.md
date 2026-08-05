@@ -137,8 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   limitation, for example) silently ran on the container backend anyway
   whenever Docker was available. Different functions can now genuinely run
   on different backends within the same `lambdary dev` server.
-
-### Changed
-
-- Function routes no longer answer with a `501` placeholder — they serve
-  real responses from the handler, per the HTTP event mapping above.
+- A crashed function runtime is now replaced on the next invocation instead
+  of failing forever: an invoke that finds its instance dead — a
+  `Runtime.ExitError` response, or a connection failure, the latter
+  retried once transparently — evicts that instance so the next invoke
+  cold-starts a fresh one, matching real Lambda's replace-on-crash
+  behavior.

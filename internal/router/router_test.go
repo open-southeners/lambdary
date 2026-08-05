@@ -2,8 +2,10 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/event"
 	"github.com/open-southeners/lambdary/internal/manifest"
@@ -434,6 +437,9 @@ func TestRouterRouteFunctionErrorEnvelope(t *testing.T) {
 	if payload.Error.ErrorType != "ValueError" || payload.Error.ErrorMessage != "boom" {
 		t.Errorf("error = %+v, want envelope carried through", payload.Error)
 	}
+	if got := b.startCount("boom"); got != 1 {
+		t.Errorf("backend.Start called %d times, want 1 (an ordinary handler error envelope must not evict the instance)", got)
+	}
 }
 
 func TestRouterRouteNon2xxIsFunctionError(t *testing.T) {
@@ -675,6 +681,202 @@ func TestRouterInvokeTimeout(t *testing.T) {
 
 	if rec.Code != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want 504; body = %s", rec.Code, rec.Body.String())
+	}
+	if got := b.startCount("slow"); got != 1 {
+		t.Errorf("backend.Start called %d times, want 1 (a slow function is not a dead one; a timeout must not evict)", got)
+	}
+}
+
+func TestRouterInvokeRuntimeExitErrorEvictsInstance(t *testing.T) {
+	envelope := []byte(`{"errorType":"Runtime.ExitError","errorMessage":"RequestId: abc Error: Runtime exited with error: exit status 1"}`)
+
+	b := newFakeBackend()
+	starts := 0
+	b.newInstance = func(string) *fakeInstance {
+		starts++
+		if starts == 1 {
+			return newFakeInstance(http.StatusOK, envelope, "application/json", 0)
+		}
+		return newFakeInstance(http.StatusOK, []byte(`{"ok":true}`), "application/json", 0)
+	}
+
+	fns := []discovery.Function{fn("crashy")}
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodPost, "/2015-03-31/functions/crashy/invocations", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (Runtime.ExitError is relayed verbatim, not turned into a router error); body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Body.Bytes(), envelope; !bytes.Equal(got, want) {
+		t.Errorf("body = %s, want %s (relayed unchanged)", got, want)
+	}
+
+	// A subsequent invoke must not reuse the dead instance: Discard should
+	// have evicted it, so this Ensure cold-starts a fresh one.
+	req2 := httptest.NewRequest(http.MethodPost, "/2015-03-31/functions/crashy/invocations", strings.NewReader("{}"))
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second invoke status = %d, want 200; body = %s", rec2.Code, rec2.Body.String())
+	}
+	if got, want := rec2.Body.String(), `{"ok":true}`; got != want {
+		t.Errorf("second invoke body = %q, want %q (fresh instance)", got, want)
+	}
+	if got := b.startCount("crashy"); got != 2 {
+		t.Fatalf("backend.Start called %d times, want 2 (Runtime.ExitError must evict the dead instance)", got)
+	}
+}
+
+func TestRouterInvokeTransportFailureRetriesTransparently(t *testing.T) {
+	b := newFakeBackend()
+	starts := 0
+	b.newInstance = func(string) *fakeInstance {
+		starts++
+		if starts == 1 {
+			// A closed httptest.Server: nothing is listening at its
+			// InvokeURL, so doInvoke's http.Client.Do fails at the
+			// transport level, before ever reaching a runtime.
+			dead := newFakeInstance(http.StatusOK, []byte("unreachable"), "", 0)
+			if err := dead.Stop(context.Background()); err != nil {
+				t.Fatalf("closing dead instance's server: %v", err)
+			}
+			return dead
+		}
+		return newFakeInstance(http.StatusOK, []byte(`{"ok":true}`), "application/json", 0)
+	}
+
+	fns := []discovery.Function{fn("flaky")}
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodPost, "/2015-03-31/functions/flaky/invocations", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (a connection failure against a dead instance retries transparently against a fresh one); body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Body.String(), `{"ok":true}`; got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+	if got := b.startCount("flaky"); got != 2 {
+		t.Fatalf("backend.Start called %d times, want 2 (initial start + one retry cold start)", got)
+	}
+}
+
+func TestRouterInvokeTransportFailureBothAttemptsFailIs502(t *testing.T) {
+	b := newFakeBackend()
+	b.newInstance = func(string) *fakeInstance {
+		dead := newFakeInstance(http.StatusOK, []byte("unreachable"), "", 0)
+		if err := dead.Stop(context.Background()); err != nil {
+			t.Fatalf("closing dead instance's server: %v", err)
+		}
+		return dead
+	}
+
+	fns := []discovery.Function{fn("dead")}
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodPost, "/2015-03-31/functions/dead/invocations", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+	if got := b.startCount("dead"); got != 2 {
+		t.Fatalf("backend.Start called %d times, want 2 (exactly one retry, never a second)", got)
+	}
+}
+
+// midBodyDisconnectBackend is a minimal backend.Backend test double, local
+// to TestRouterInvokeResponseBodyFailureDoesNotRetryOrEvict: it hands back
+// a midBodyDisconnectInstance and counts Start calls, so the test can
+// assert no retry (and no eviction) happened for a response-body read
+// failure — as opposed to fakeBackend/fakeInstance, which have no way to
+// make http.Client.Do itself succeed while the subsequent body read fails.
+type midBodyDisconnectBackend struct {
+	mu     sync.Mutex
+	starts int
+}
+
+func (b *midBodyDisconnectBackend) Start(context.Context, discovery.Function) (backend.Instance, error) {
+	b.mu.Lock()
+	b.starts++
+	b.mu.Unlock()
+
+	return newMidBodyDisconnectInstance(), nil
+}
+
+// startCount reports how many times Start was called.
+func (b *midBodyDisconnectBackend) startCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.starts
+}
+
+// midBodyDisconnectInstance is a backend.Instance test double whose server
+// accepts the invoke request, hijacks the connection to write response
+// headers claiming a body far longer than what it actually sends, then
+// closes the connection — simulating a runtime that crashes after it
+// already started answering. This makes http.DefaultClient.Do itself
+// succeed (headers parse fine) while the subsequent io.ReadAll of the
+// response body fails with an unexpected EOF, exercising doInvoke's second
+// failure phase (see doInvoke's doc comment) as distinct from a connection
+// that never got a response at all.
+type midBodyDisconnectInstance struct {
+	srv *httptest.Server
+}
+
+func newMidBodyDisconnectInstance() *midBodyDisconnectInstance {
+	inst := &midBodyDisconnectInstance{}
+	inst.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			panic("test server ResponseWriter does not support hijacking")
+		}
+
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+
+		// Content-Length promises far more than the body actually
+		// delivered before the connection closes.
+		conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nContent-Type: application/json\r\n\r\n{\"partial\":")) //nolint:errcheck // test double, best-effort write.
+	}))
+
+	return inst
+}
+
+func (i *midBodyDisconnectInstance) InvokeURL() string { return i.srv.URL }
+
+func (i *midBodyDisconnectInstance) Stop(context.Context) error {
+	i.srv.Close()
+	return nil
+}
+
+func (i *midBodyDisconnectInstance) Logs() io.Reader { return strings.NewReader("") }
+
+func TestRouterInvokeResponseBodyFailureDoesNotRetryOrEvict(t *testing.T) {
+	b := &midBodyDisconnectBackend{}
+
+	fns := []discovery.Function{fn("flaky-body")}
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodPost, "/2015-03-31/functions/flaky-body/invocations", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (a response-body read failure must not retry); body = %s", rec.Code, rec.Body.String())
+	}
+	if got := b.startCount(); got != 1 {
+		t.Fatalf("backend.Start called %d times, want 1 (a response-body read failure must not evict/retry — the runtime may already have executed)", got)
 	}
 }
 

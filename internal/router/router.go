@@ -164,35 +164,121 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, name stri
 // *invokeError, already tagging whether it stemmed from the deadline, so
 // writeUpstreamError can pick 502 vs 504 without needing ctx or timeout in
 // hand.
+//
+// invoke also detects a dead runtime from the attempt's outcome and evicts
+// the cached instance — see plans/dead-runtime-and-provided-container.md
+// Unit B, resolving CURRENT_ISSUES.md's "a dead process-backend runtime is
+// never retried". The RIE process (and, for the container backend, the
+// container itself) stays alive when only the runtime child inside it
+// dies, so there is no process-liveness signal to check; the only way to
+// tell is from how an invoke against it behaves:
+//
+//   - a transport-level failure (doInvoke's http.Client.Do itself errored —
+//     marked with transportError — and it wasn't a deadline or
+//     cancellation) means whatever was listening on invokeURL is gone
+//     before the request ever reached a runtime. Nothing executed, so it's
+//     safe to evict and retry exactly once against a freshly cold-started
+//     instance, transparently to the caller. A failure reading the
+//     response body (the runtime already answered, or started to, before
+//     the connection broke) is deliberately NOT treated this way — see
+//     doInvoke's doc comment — for the same double-execution reason as
+//     Runtime.ExitError below.
+//   - a Runtime.ExitError response body (see isRuntimeExit) means the RIE
+//     answered, but its runtime child had already exited — real Lambda's
+//     signal that the execution environment is gone and every future
+//     invoke against it is doomed. The handler may have been mid-execution
+//     when it died, so this response is relayed to the caller unchanged
+//     and NOT retried (replaying risks double side effects); only the
+//     *next* invoke gets a fresh instance, mirroring how real Lambda
+//     replaces the environment after reporting the failure rather than
+//     retrying it for you.
+//
+// A slow function (the invoke's own deadline firing) is deliberately never
+// treated as dead: attempt's Ensure/doInvoke pair is still ongoing, not
+// failed, so timing out says nothing about whether the runtime itself is
+// still alive.
 func (rt *Router) invoke(r *http.Request, name string, body []byte) (status int, respBody []byte, contentType string, err error) {
 	timeout := rt.mgr.InvokeTimeout(name)
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	invokeURL, err := rt.mgr.Ensure(ctx, name)
-	if err != nil {
-		return 0, nil, "", newInvokeError(ctx, timeout, err)
+	status, respBody, contentType, invokeURL, attemptErr := rt.attempt(ctx, name, body)
+
+	if attemptErr != nil && invokeURL != "" && isTransportFailure(ctx, attemptErr) {
+		rt.mgr.Discard(ctx, name, invokeURL) //nolint:errcheck // best-effort; see Discard's doc comment.
+		status, respBody, contentType, invokeURL, attemptErr = rt.attempt(ctx, name, body)
 	}
 
-	var invokeErr error
+	if attemptErr != nil {
+		return 0, nil, "", newInvokeError(ctx, timeout, attemptErr)
+	}
 
-	// WithLock's fn always returns nil here; the invoke outcome is
-	// reported via the closed-over variables instead so a lock error
-	// (there is none, today) and an invoke error stay distinguishable.
-	_ = rt.mgr.WithLock(name, func() error {
-		status, respBody, contentType, invokeErr = doInvoke(ctx, invokeURL, body)
-		return nil
-	})
-
-	if invokeErr != nil {
-		return 0, nil, "", newInvokeError(ctx, timeout, invokeErr)
+	if isRuntimeExit(respBody) {
+		rt.mgr.Discard(ctx, name, invokeURL) //nolint:errcheck // best-effort; see Discard's doc comment.
 	}
 
 	return status, respBody, contentType, nil
 }
 
+// attempt runs one Ensure + WithLock(doInvoke) cycle: resolve name to a
+// running instance (starting it on first use via Manager.Ensure), then POST
+// body to it while holding the function's invoke lock for the duration of
+// that single POST — never across more than one attempt, so a Discard
+// invoke runs between attempts always finds the lock free. invoke calls
+// attempt once for the ordinary path and, for the transport-failure retry
+// dead-runtime detection allows, a second time after discarding the
+// instance the first attempt implicated.
+//
+// invokeURL is returned alongside the outcome (even on a doInvoke failure)
+// so invoke can pass it to Manager.Discard without a second Ensure call; on
+// an Ensure failure itself it is "", which invoke uses to tell "never
+// reached a runtime because there wasn't one to reach" apart from a
+// transport failure against a real, now-dead one. err itself can come from
+// either Ensure or doInvoke; isTransportFailure (not attempt) is what tells
+// the two doInvoke failure phases apart — see doInvoke's doc comment.
+func (rt *Router) attempt(ctx context.Context, name string, body []byte) (status int, respBody []byte, contentType, invokeURL string, err error) {
+	invokeURL, err = rt.mgr.Ensure(ctx, name)
+	if err != nil {
+		return 0, nil, "", "", err
+	}
+
+	// WithLock's fn always returns nil here; the invoke outcome is
+	// reported via the closed-over variables instead so a lock error
+	// (there is none, today) and an invoke error stay distinguishable.
+	_ = rt.mgr.WithLock(name, func() error {
+		status, respBody, contentType, err = doInvoke(ctx, invokeURL, body)
+		return nil
+	})
+
+	return status, respBody, contentType, invokeURL, err
+}
+
+// isTransportFailure reports whether err from an attempt call means the
+// request never reached a runtime at all — requiring both that err (or
+// something it wraps) is a *transportError (see doInvoke's doc comment;
+// this rules out a response-body read failure, where the runtime may
+// already have executed) and that it isn't the invoke's own deadline
+// firing (ctx.Err() set, or err itself wrapping
+// context.DeadlineExceeded/context.Canceled) — a slow function, not a dead
+// one, per invoke's doc comment.
+func isTransportFailure(ctx context.Context, err error) bool {
+	var te *transportError
+	return errors.As(err, &te) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && ctx.Err() == nil
+}
+
 // doInvoke POSTs body to invokeURL and returns the upstream response,
 // verbatim, for handleInvoke to relay.
+//
+// doInvoke can fail in two phases that look alike (both are just "err !=
+// nil" to a naive caller) but mean very different things for whether a
+// retry is safe: http.DefaultClient.Do itself failing (connection refused,
+// DNS failure, TLS handshake failure — the request never reached a
+// runtime) marks its error with transportError so isTransportFailure can
+// tell it apart; reading the response body failing (e.g. the connection
+// resets mid-body) leaves its error unmarked, because by then the runtime
+// had already accepted the request and may have started executing the
+// handler — retrying that case risks double-running it, the same hazard
+// invoke's Runtime.ExitError handling deliberately avoids.
 func doInvoke(ctx context.Context, invokeURL string, body []byte) (status int, respBody []byte, contentType string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, invokeURL, bytes.NewReader(body))
 	if err != nil {
@@ -201,17 +287,34 @@ func doInvoke(ctx context.Context, invokeURL string, body []byte) (status int, r
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, nil, "", fmt.Errorf("router: invoking: %w", err)
+		return 0, nil, "", &transportError{err: fmt.Errorf("router: invoking: %w", err)}
 	}
 	defer resp.Body.Close()
 
 	respBody, err = io.ReadAll(resp.Body)
 	if err != nil {
+		// Deliberately not wrapped in transportError: the runtime already
+		// answered (or started to), so invoke must not treat this as safe
+		// to retry, even though it's still, in a sense, a transport-level
+		// symptom.
 		return 0, nil, "", fmt.Errorf("router: reading invoke response: %w", err)
 	}
 
 	return resp.StatusCode, respBody, resp.Header.Get("Content-Type"), nil
 }
+
+// transportError marks a doInvoke failure that happened before any request
+// reached a runtime — http.DefaultClient.Do itself erroring — as opposed to
+// a failure reading the response after the runtime already answered. Only
+// an error marked this way is eligible for invoke's transparent retry (see
+// isTransportFailure): nothing executed, so cold-starting a fresh instance
+// and resending is safe.
+type transportError struct {
+	err error
+}
+
+func (e *transportError) Error() string { return e.err.Error() }
+func (e *transportError) Unwrap() error { return e.err }
 
 // invokeError wraps a backend/network failure from (*Router).invoke,
 // tagging whether it stemmed from the invoke's own deadline (Ensure's
@@ -415,6 +518,24 @@ func isErrorEnvelope(body []byte) bool {
 	_, hasMessage := top["errorMessage"]
 
 	return hasType && hasMessage
+}
+
+// isRuntimeExit reports whether body is a Lambda error envelope (see
+// isErrorEnvelope) whose errorType is exactly "Runtime.ExitError" — the
+// RIE's signal that the runtime process behind an instance has exited and
+// every future invoke against it is doomed (see invoke's doc comment). Any
+// JSON parse miss (malformed body, errorType absent or non-string) reports
+// false rather than erroring, matching isErrorEnvelope's own posture: a
+// body that doesn't parse this way just isn't this kind of envelope.
+func isRuntimeExit(body []byte) bool {
+	var envelope struct {
+		ErrorType string `json:"errorType"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return false
+	}
+
+	return envelope.ErrorType == "Runtime.ExitError"
 }
 
 // errorPayload prepares an upstream function-error body for embedding in
