@@ -4,11 +4,11 @@
 # the container backend automatically — no --runtime flag, no base image
 # to pick.
 #
-# AWS's public.ecr.aws/lambda/provided:al2023 base image ships no runtime
-# of its own (unlike the nodejs/python images): its entrypoint always execs
-# a fixed /var/runtime/bootstrap, so a custom-runtime function needs its
-# compiled binary placed there. Building it in a throwaway stage means
-# nobody needs Go installed locally to run this example.
+# lambdary can bind-mount a plain bootstrap file into a provided.* container
+# with no Dockerfile at all, but that only works for an already-executable
+# bootstrap — Go's has to be compiled from main.go first, and lambdary has
+# no automatic build step for compiled runtimes. Building it in a throwaway
+# stage here means nobody needs Go installed locally to run this example.
 FROM golang:1.23-alpine AS build
 WORKDIR /src
 COPY go.mod main.go ./

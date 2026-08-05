@@ -19,6 +19,7 @@ package container
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -113,6 +114,19 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 		if digest, ok := b.lock.ImageDigest(image); ok {
 			runImage = digestRef(image, digest)
 			usedDigest = true
+		}
+	}
+
+	// runArgs bind-mounts <absDir>/bootstrap to /var/runtime/bootstrap for a
+	// provided.* function (see argv.go), and Docker/Podman silently create a
+	// missing bind-mount *source* as an empty directory rather than erroring
+	// — which would leave the container's RUNTIME_ENTRYPOINT pointing at a
+	// directory instead of a bootstrap file and fail in a confusing way deep
+	// inside the container. Catch the missing file here instead, with a
+	// message that names the actual fix.
+	if strings.HasPrefix(fn.Runtime, "provided.") {
+		if _, err := os.Stat(filepath.Join(absDir, "bootstrap")); err != nil {
+			return nil, fmt.Errorf("container: %s: provided.* runtime needs a bootstrap file in the function directory (or a function-owned Dockerfile): %w", fn.Name, err)
 		}
 	}
 

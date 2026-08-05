@@ -116,6 +116,60 @@ func TestRunArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("provided.* runtime with no handler mounts bootstrap and appends a placeholder CMD", func(t *testing.T) {
+		fn := discovery.Function{
+			Name:     "custom-runtime",
+			Dir:      "/root/custom-runtime",
+			Runtime:  "provided.al2023",
+			Manifest: &manifest.Manifest{},
+		}
+
+		got := runArgs(fn, "public.ecr.aws/lambda/provided:al2023", "/abs/custom-runtime", nil)
+
+		want := []string{
+			"run", "-d", "--rm",
+			"--label", "lambdary=1",
+			"--label", "lambdary.function=custom-runtime",
+			"-p", "127.0.0.1:0:8080",
+			"-v", "/abs/custom-runtime:/var/task:ro",
+			"-v", "/abs/custom-runtime/bootstrap:/var/runtime/bootstrap:ro",
+			"-e", "AWS_LAMBDA_FUNCTION_NAME=custom-runtime",
+			"public.ecr.aws/lambda/provided:al2023",
+			"bootstrap",
+		}
+
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("runArgs() =\n%v\nwant\n%v", got, want)
+		}
+	})
+
+	t.Run("non-provided runtime with a handler is unchanged (no bootstrap mount)", func(t *testing.T) {
+		fn := discovery.Function{
+			Name:     "hello",
+			Dir:      "/root/hello",
+			Handler:  "index.handler",
+			Runtime:  "nodejs22.x",
+			Manifest: &manifest.Manifest{},
+		}
+
+		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/hello", nil)
+
+		want := []string{
+			"run", "-d", "--rm",
+			"--label", "lambdary=1",
+			"--label", "lambdary.function=hello",
+			"-p", "127.0.0.1:0:8080",
+			"-v", "/abs/hello:/var/task:ro",
+			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"public.ecr.aws/lambda/nodejs:22",
+			"index.handler",
+		}
+
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("runArgs() =\n%v\nwant\n%v", got, want)
+		}
+	})
+
 	t.Run("fileEnv is folded in under manifest environment", func(t *testing.T) {
 		fn := discovery.Function{
 			Name: "hello",

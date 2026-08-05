@@ -143,3 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   retried once transparently — evicts that instance so the next invoke
   cold-starts a fresh one, matching real Lambda's replace-on-crash
   behavior.
+- `provided.*` functions now run on the container backend without a
+  `Dockerfile`: the function's `bootstrap` file is mounted where the AWS
+  base image's entrypoint expects it. Compiled custom runtimes still need
+  their binary built beforehand — that remains a known limitation.

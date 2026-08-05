@@ -81,6 +81,68 @@ func TestContainerBackendStart(t *testing.T) {
 		}
 	})
 
+	t.Run("provided.* runtime with no bootstrap file errors without running anything", func(t *testing.T) {
+		r := &fakeRunner{}
+		b := &containerBackend{cli: "docker", runner: r}
+
+		fn := discovery.Function{
+			Name:     "custom-runtime",
+			Dir:      t.TempDir(),
+			Runtime:  "provided.al2023",
+			Manifest: &manifest.Manifest{},
+		}
+
+		_, err := b.Start(context.Background(), fn)
+		if err == nil {
+			t.Fatal("Start() expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "bootstrap") {
+			t.Errorf("Start() error = %v, want it to mention bootstrap", err)
+		}
+		if calls := r.callsFor("run"); len(calls) != 0 {
+			t.Errorf("run calls = %d, want 0 (Start must not run a container for a missing bootstrap)", len(calls))
+		}
+	})
+
+	t.Run("provided.* runtime with a bootstrap file mounts it and appends the placeholder CMD", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "bootstrap"), "#!/bin/sh\n")
+
+		r := &fakeRunner{respond: map[string]func(args []string) (string, error){
+			"run":  func(args []string) (string, error) { return "container123\n", nil },
+			"port": func(args []string) (string, error) { return "127.0.0.1:" + listenLoopback(t) + "\n", nil },
+			"stop": func(args []string) (string, error) { return "", nil },
+		}}
+
+		b := &containerBackend{cli: "docker", runner: r, readyTimeout: 2 * time.Second}
+
+		fn := discovery.Function{
+			Name:     "custom-runtime",
+			Dir:      dir,
+			Runtime:  "provided.al2023",
+			Manifest: &manifest.Manifest{},
+		}
+
+		inst, err := b.Start(context.Background(), fn)
+		if err != nil {
+			t.Fatalf("Start() unexpected error: %v", err)
+		}
+		defer inst.Stop(context.Background())
+
+		runCalls := r.callsFor("run")
+		if len(runCalls) != 1 {
+			t.Fatalf("run calls = %d, want 1", len(runCalls))
+		}
+		argv := runCalls[0]
+		wantMount := "-v " + filepath.Join(dir, "bootstrap") + ":/var/runtime/bootstrap:ro"
+		if !strings.Contains(strings.Join(argv, " "), wantMount) {
+			t.Errorf("run argv = %v, want it to contain %q", argv, wantMount)
+		}
+		if argv[len(argv)-1] != "bootstrap" {
+			t.Errorf("run argv last element = %q, want the placeholder CMD %q", argv[len(argv)-1], "bootstrap")
+		}
+	})
+
 	t.Run("Dockerfile-marker function with no actual Dockerfile errors without running anything", func(t *testing.T) {
 		r := &fakeRunner{}
 		b := &containerBackend{cli: "docker", runner: r}

@@ -9,12 +9,13 @@ between.
 It also demonstrates a different discovery path than the other two
 examples: this directory has its own `Dockerfile` and no `runtime` key in
 `.lambda.yml`, so lambdary builds and runs it as a container automatically
-— `docker build`, on every start, hot reload included. (AWS's
-`provided.al2023` base image ships no runtime of its own, so a bare
-bind-mounted `bootstrap` — what `lambdary init --runtime provided.al2023`
-scaffolds — only works via the process backend; going through Docker for a
-custom runtime needs a Dockerfile that puts the compiled binary where the
-base image's entrypoint expects it. See the Dockerfile's comments.)
+— `docker build`, on every start, hot reload included. (A bare bind-mounted
+`bootstrap` — what `lambdary init --runtime provided.al2023` scaffolds —
+now runs on either backend with no Dockerfile needed, but only if it's
+already an executable; Go's `bootstrap` is compiled from `main.go`, and
+lambdary has no automatic build step for compiled runtimes, so a
+function-owned Dockerfile that builds the binary is still the practical
+choice here. See the Dockerfile's comments.)
 
 Between the three examples, that's Lambdary's full surface: process
 backend with a language shim, and container backend both with

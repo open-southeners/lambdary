@@ -3,6 +3,7 @@ package container
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/manifest"
@@ -31,12 +32,26 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 		m = &manifest.Manifest{}
 	}
 
+	provided := strings.HasPrefix(fn.Runtime, "provided.")
+
 	args := []string{
 		"run", "-d", "--rm",
 		"--label", "lambdary=1",
 		"--label", "lambdary.function=" + fn.Name,
 		"-p", "127.0.0.1:0:8080",
 		"-v", fnDir + ":/var/task:ro",
+	}
+
+	// AWS's provided.* base images hardcode RUNTIME_ENTRYPOINT to
+	// /var/runtime/bootstrap, which is empty in the base image itself — so
+	// without this second mount the entrypoint has nothing to exec. This
+	// applies even under a local.image override, since a custom
+	// provided-family image mimics the AWS base image's entrypoint.
+	// Dockerfile-marker functions never reach here with fn.Runtime set (see
+	// isDockerfileFunction), so they're unaffected. See
+	// plans/dead-runtime-and-provided-container.md.
+	if provided {
+		args = append(args, "-v", fnDir+"/bootstrap:/var/runtime/bootstrap:ro")
 	}
 
 	env := envMerge(fileEnv, m.Environment)
@@ -63,6 +78,11 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 
 	if fn.Handler != "" {
 		args = append(args, fn.Handler)
+	} else if provided {
+		// The entrypoint requires *a* handler argument or it exits
+		// immediately — it becomes _HANDLER, which a custom provided.*
+		// runtime is free to ignore, so any placeholder value works.
+		args = append(args, "bootstrap")
 	}
 
 	return args
