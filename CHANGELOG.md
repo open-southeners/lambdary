@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- An `examples/` playground with three ready-to-run functions: a Node.js
+  Playwright screenshot service (`GET /screenshot?url=...`), a Python
+  image-thumbnail service (`POST /thumbnail`), and a Go checksum service
+  with its own `Dockerfile` (`POST /checksum`) — together covering binary
+  request/response bodies, query strings, environment config, and
+  `Dockerfile`-based container functions end to end.
 - Prebuilt `lambdary` binaries for Linux and macOS (amd64 + arm64) are now
   attached to every GitHub release, with SHA-256 checksums, and release
   notes are generated automatically from this changelog.
