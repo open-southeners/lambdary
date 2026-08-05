@@ -42,7 +42,7 @@ var ErrUnknownFunction = errors.New("unknown function")
 //     function's instance, per DESIGN.md's "the RIE processes one
 //     invocation at a time per instance" constraint.
 type Manager struct {
-	backend backend.Backend
+	resolve BackendResolver
 	fns     map[string]discovery.Function
 
 	// mapMu guards creation of entries in starts and invokeLocks (not the
@@ -66,21 +66,47 @@ type Manager struct {
 	OnStart func(name string, inst backend.Instance)
 }
 
-// NewManager builds a Manager over b for the discovered functions fns,
-// keyed by Function.Name. Functions with a duplicate Name (see discovery's
+// BackendResolver picks the backend.Backend that should run fn — see
+// internal/cli's implementation (dev.go/backend_resolver.go), which honors
+// a function's own local.backend hint (discovery.Function.Backend) instead
+// of every function sharing whatever one backend `dev`/`invoke` happened to
+// resolve, the gap CURRENT_ISSUES.md tracked as "`local.backend` is not
+// honored per function".
+type BackendResolver func(ctx context.Context, fn discovery.Function) (backend.Backend, error)
+
+// staticResolver adapts a single backend.Backend into a BackendResolver
+// that always returns it, regardless of fn — NewManager's behavior for
+// callers that only ever run every function on one backend.
+func staticResolver(b backend.Backend) BackendResolver {
+	return func(context.Context, discovery.Function) (backend.Backend, error) {
+		return b, nil
+	}
+}
+
+// NewManager builds a Manager over a single backend b, shared by every
+// function in fns regardless of its own local.backend hint — see
+// NewManagerWithResolver for callers (namely `lambdary dev`) that need to
+// honor per-function overrides instead.
+func NewManager(b backend.Backend, fns []discovery.Function) *Manager {
+	return NewManagerWithResolver(staticResolver(b), fns)
+}
+
+// NewManagerWithResolver builds a Manager that asks resolve for each
+// function's backend.Backend individually (see BackendResolver), keyed by
+// Function.Name. Functions with a duplicate Name (see discovery's
 // Warnings) collapse to the last one in fns for Ensure's purposes; callers
 // are expected to reject invocations of a colliding name before reaching
 // Ensure (see router.go's name-collision handling), so which of the
 // colliding functions Ensure would start never actually matters in
 // practice.
-func NewManager(b backend.Backend, fns []discovery.Function) *Manager {
+func NewManagerWithResolver(resolve BackendResolver, fns []discovery.Function) *Manager {
 	byName := make(map[string]discovery.Function, len(fns))
 	for _, fn := range fns {
 		byName[fn.Name] = fn
 	}
 
 	return &Manager{
-		backend:     b,
+		resolve:     resolve,
 		fns:         byName,
 		starts:      make(map[string]*sync.Mutex),
 		invokeLocks: make(map[string]*sync.Mutex),
@@ -110,7 +136,13 @@ func (m *Manager) Ensure(ctx context.Context, name string) (string, error) {
 		return inst.InvokeURL(), nil
 	}
 
-	inst, err := m.backend.Start(ctx, fn)
+	b, err := m.resolve(ctx, fn)
+	if err != nil {
+		mu.Unlock()
+		return "", fmt.Errorf("router: resolving backend for %s: %w", name, err)
+	}
+
+	inst, err = b.Start(ctx, fn)
 	if err != nil {
 		mu.Unlock()
 		return "", fmt.Errorf("router: starting %s: %w", name, err)

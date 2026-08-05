@@ -21,17 +21,6 @@ Discovered during orchestrated work; routed here instead of fixed inline.
 - **Fix:** only if it ever flakes in practice — retry `Start` on
   bind-failure, or pass pre-bound listeners if upstream ever supports it.
 
-## `local.backend` is not honored per function (DESIGN gap)
-
-- **Where:** `internal/cli/backend.go` / `dev.go` / `internal/router/manager.go`.
-- **What:** `.lambda.yml`'s `local.backend` is parsed, validated, and shown
-  by `list`, but `dev`/`invoke` resolve ONE global backend for the whole run;
-  a function declaring `local.backend: process` still runs on the globally
-  selected backend. DESIGN.md implies per-function selection.
-- **Fix:** make the Manager hold a per-function backend chosen from the
-  manifest hint (falling back to the globally resolved one for `auto`),
-  constructing both backends lazily only when some function needs them.
-
 ## `lambdary logs [fn]` command missing (DESIGN gap)
 
 - **Where:** `internal/cli` (DESIGN.md "CLI surface" lists it; 4 of 5

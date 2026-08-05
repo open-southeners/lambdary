@@ -67,7 +67,7 @@ quick one-off check without a dev server running.`,
 
 	cmd.Flags().StringVarP(&eventSource, "event", "e", "", `path to a JSON event file ("-" reads stdin; default: "{}")`)
 	cmd.Flags().IntVar(&port, "port", 0, "dev server port to probe (default: lambdary.yml port or 8000)")
-	cmd.Flags().StringVar(&backendFlag, "backend", "auto", `execution backend for standalone mode: "auto", "container", or "process" (ignored in server mode)`)
+	cmd.Flags().StringVar(&backendFlag, "backend", "auto", `execution backend for standalone mode when the function's own local.backend is "auto": "auto", "container", or "process" (ignored in server mode)`)
 
 	return cmd
 }
@@ -199,14 +199,30 @@ func invokeServer(ctx context.Context, out, errOut io.Writer, port int, name str
 	return nil
 }
 
+// effectiveInvokeBackendMode returns the backend mode invokeStandalone
+// should resolve: fn's own explicit local.backend hint ("container" or
+// "process") always wins over backendFlag; "auto" (or unset) defers to
+// backendFlag — the same per-function precedence `dev` applies (see
+// resolveManagerBackend).
+func effectiveInvokeBackendMode(fn discovery.Function, backendFlag string) string {
+	if fn.Backend == "container" || fn.Backend == "process" {
+		return fn.Backend
+	}
+
+	return backendFlag
+}
+
 // invokeStandalone resolves the backend named by backendFlag (see
-// resolveBackend), starts fn's backend just for this one call, POSTs event
-// to it, prints the response to out, and stops the instance again — via
-// defer, so Stop runs on every path once Start succeeds, including invoke
-// errors. lock (nil-able) is threaded into resolveBackend for image-digest
+// resolveBackend) — unless fn's own local.backend hint explicitly names
+// "container" or "process", which always wins over backendFlag, the same
+// per-function precedence `dev` applies (see resolveManagerBackend) — and
+// starts fn's backend just for this one call, POSTs event to it, prints
+// the response to out, and stops the instance again — via defer, so Stop
+// runs on every path once Start succeeds, including invoke errors. lock
+// (nil-able) is threaded into resolveBackend for image-digest
 // pinning/recording, per plans/m5-extras.md's Unit C.
 func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.Function, event []byte, backendFlag string, lock *lockfile.Lock) error {
-	b, _, err := resolveBackend(ctx, backendFlag, backend.ExecRunner{}, errOut, lock)
+	b, _, err := resolveBackend(ctx, effectiveInvokeBackendMode(fn, backendFlag), backend.ExecRunner{}, errOut, lock)
 	if err != nil {
 		return err
 	}

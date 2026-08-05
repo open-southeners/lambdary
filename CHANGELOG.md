@@ -124,6 +124,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `export` prefix), merged under the manifest's own `environment` block —
   explicit `environment` keys always win on conflict.
 
+### Fixed
+
+- A function's own `.lambda.yml` `local: backend` setting is now honored:
+  previously `dev`/`invoke` picked one backend for every function, so a
+  function declaring `local.backend: process` (to dodge a container-image
+  limitation, for example) silently ran on the container backend anyway
+  whenever Docker was available. Different functions can now genuinely run
+  on different backends within the same `lambdary dev` server.
+
 ### Changed
 
 - Function routes no longer answer with a `501` placeholder — they serve

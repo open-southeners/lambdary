@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/manifest"
 )
@@ -280,5 +281,71 @@ func TestManagerStopAllJoinsErrors(t *testing.T) {
 	err := m.StopAll(context.Background())
 	if !errors.Is(err, errStoppedBackend) {
 		t.Fatalf("StopAll() error = %v, want errors.Is errStoppedBackend", err)
+	}
+}
+
+func TestManagerWithResolverPicksBackendPerFunction(t *testing.T) {
+	containerBackend := newFakeBackend()
+	processBackend := newFakeBackend()
+
+	a := fn("a")
+	a.Backend = "container"
+	b := fn("b")
+	b.Backend = "process"
+
+	resolve := func(_ context.Context, target discovery.Function) (backend.Backend, error) {
+		if target.Backend == "process" {
+			return processBackend, nil
+		}
+		return containerBackend, nil
+	}
+
+	m := NewManagerWithResolver(resolve, []discovery.Function{a, b})
+
+	if _, err := m.Ensure(context.Background(), "a"); err != nil {
+		t.Fatalf("Ensure(a) error = %v", err)
+	}
+	if _, err := m.Ensure(context.Background(), "b"); err != nil {
+		t.Fatalf("Ensure(b) error = %v", err)
+	}
+
+	if got := containerBackend.startCount("a"); got != 1 {
+		t.Errorf("containerBackend.Start(a) called %d times, want 1", got)
+	}
+	if got := processBackend.startCount("b"); got != 1 {
+		t.Errorf("processBackend.Start(b) called %d times, want 1", got)
+	}
+	if got := containerBackend.startCount("b"); got != 0 {
+		t.Errorf("containerBackend.Start(b) called %d times, want 0 — b's own backend hint should have kept it off the container backend", got)
+	}
+	if got := processBackend.startCount("a"); got != 0 {
+		t.Errorf("processBackend.Start(a) called %d times, want 0 — a's own backend hint should have kept it off the process backend", got)
+	}
+}
+
+// errResolveBackend is a stand-in resolver failure for
+// TestManagerEnsurePropagatesResolverError.
+var errResolveBackend = errors.New("router_test: resolving backend failed")
+
+func TestManagerEnsurePropagatesResolverError(t *testing.T) {
+	calls := 0
+	resolve := func(context.Context, discovery.Function) (backend.Backend, error) {
+		calls++
+		return nil, errResolveBackend
+	}
+
+	m := NewManagerWithResolver(resolve, []discovery.Function{fn("a")})
+
+	if _, err := m.Ensure(context.Background(), "a"); !errors.Is(err, errResolveBackend) {
+		t.Fatalf("Ensure() error = %v, want errors.Is errResolveBackend", err)
+	}
+
+	// A failed resolution isn't cached either, matching a failed Start —
+	// the next Ensure retries from scratch.
+	if _, err := m.Ensure(context.Background(), "a"); !errors.Is(err, errResolveBackend) {
+		t.Fatalf("second Ensure() error = %v, want errors.Is errResolveBackend", err)
+	}
+	if calls != 2 {
+		t.Fatalf("resolver called %d times, want 2 (one per Ensure)", calls)
 	}
 }

@@ -94,3 +94,30 @@ func TestFunctionTimeoutWithManifest(t *testing.T) {
 		t.Errorf("expected timeout %v, got %v", expected, timeout)
 	}
 }
+
+// TestEffectiveInvokeBackendMode covers invoke standalone mode's
+// per-function precedence: an explicit local.backend hint always wins over
+// --backend, mirroring resolveManagerBackend's rule for `dev`.
+func TestEffectiveInvokeBackendMode(t *testing.T) {
+	tests := []struct {
+		name        string
+		fnBackend   string
+		backendFlag string
+		want        string
+	}{
+		{"auto hint defers to flag", "auto", "container", "container"},
+		{"unset hint defers to flag", "", "process", "process"},
+		{"explicit container hint wins over flag", "container", "process", "container"},
+		{"explicit process hint wins over flag", "process", "container", "process"},
+		{"explicit hint matching flag is a no-op", "container", "container", "container"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fn := discovery.Function{Backend: tt.fnBackend}
+			if got := effectiveInvokeBackendMode(fn, tt.backendFlag); got != tt.want {
+				t.Errorf("effectiveInvokeBackendMode(Backend=%q, flag=%q) = %q, want %q", tt.fnBackend, tt.backendFlag, got, tt.want)
+			}
+		})
+	}
+}

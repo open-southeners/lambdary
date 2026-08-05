@@ -46,8 +46,12 @@ HTTP server: the AWS-compatible invoke passthrough
 "aws lambda invoke --endpoint-url".
 
 Each function's backend starts lazily, on its first invocation, unless
---eager starts every backend up front. Stop the server with Ctrl-C
-(SIGINT) or SIGTERM; it stops every running backend before exiting.
+--eager starts every backend up front. --backend picks the default for
+functions whose own .lambda.yml local.backend is "auto" (or unset); a
+function that sets local.backend to "container" or "process" explicitly
+always runs on that one instead, letting functions with different needs
+share one dev server. Stop the server with Ctrl-C (SIGINT) or SIGTERM; it
+stops every running backend before exiting.
 
 Hot reload is on by default: editing a function's code restarts just that
 function (on its next request); adding/removing a function directory or
@@ -62,7 +66,7 @@ turns this off.`,
 
 	cmd.Flags().IntVar(&port, "port", 0, "local HTTP server port (default: lambdary.yml port or 8000)")
 	cmd.Flags().BoolVar(&eager, "eager", false, "start every function's backend immediately instead of on first invoke")
-	cmd.Flags().StringVar(&backendFlag, "backend", "auto", `execution backend: "auto", "container", or "process"`)
+	cmd.Flags().StringVar(&backendFlag, "backend", "auto", `default execution backend for functions whose own local.backend is "auto": "auto", "container", or "process"`)
 	cmd.Flags().BoolVar(&noReload, "no-reload", false, "disable hot reload (function/config edits require a restart)")
 
 	return cmd
@@ -129,7 +133,7 @@ func (d *devServer) run(ctx context.Context) error {
 		fmt.Fprintf(d.errOut, "warning: ignoring corrupt .lambdary/lock: %s\n", err)
 	}
 
-	b, backendName, err := resolveBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock)
+	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock)
 	if err != nil {
 		return err
 	}
@@ -159,7 +163,7 @@ func (d *devServer) run(ctx context.Context) error {
 // discovery error is returned as-is, letting the caller decide whether that
 // means "fail startup" (run) or "keep the previous configuration" (a
 // reload).
-func (d *devServer) buildStack(_ context.Context, b backend.Backend) (*devStack, error) {
+func (d *devServer) buildStack(_ context.Context, b router.BackendResolver) (*devStack, error) {
 	scanRoot, cfg, err := resolveRoot(d.root)
 	if err != nil {
 		return nil, err
@@ -180,7 +184,7 @@ func (d *devServer) buildStack(_ context.Context, b backend.Backend) (*devStack,
 		}
 	}
 
-	mgr := router.NewManager(b, fns)
+	mgr := router.NewManagerWithResolver(b, fns)
 	mgr.OnStart = d.onInstanceStart
 
 	return &devStack{
@@ -226,7 +230,7 @@ func ensureAll(ctx context.Context, mgr *router.Manager, fns []discovery.Functio
 // goroutine only, so none of it needs its own locking; only the
 // atomicHandler swap is visible to other goroutines (the HTTP server's own
 // request-handling goroutines).
-func (d *devServer) serve(ctx context.Context, b backend.Backend, stack *devStack, port int) error {
+func (d *devServer) serve(ctx context.Context, b router.BackendResolver, stack *devStack, port int) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	ln, err := net.Listen("tcp", addr)
@@ -347,7 +351,7 @@ loop:
 func (d *devServer) handleReloadEvent(
 	ctx context.Context,
 	ev watcher.Event,
-	b backend.Backend,
+	b router.BackendResolver,
 	curMgr *router.Manager,
 	curFns []discovery.Function,
 	watchEvents <-chan watcher.Event,
