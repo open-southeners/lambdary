@@ -238,6 +238,82 @@ func TestManagerRestartRaceCleanUnderConcurrentInvoke(t *testing.T) {
 	wg.Wait()
 }
 
+func TestManagerDiscardMatchingURLStopsAndForgets(t *testing.T) {
+	b := newFakeBackend()
+	m := NewManager(b, []discovery.Function{fn("a")})
+
+	url, err := m.Ensure(context.Background(), "a")
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+
+	first := b.instance("a")
+
+	if err := m.Discard(context.Background(), "a", url); err != nil {
+		t.Fatalf("Discard() error = %v", err)
+	}
+
+	if !first.stopped {
+		t.Fatalf("Discard() left the dead instance running")
+	}
+
+	if _, err := m.Ensure(context.Background(), "a"); err != nil {
+		t.Fatalf("Ensure() after Discard() error = %v", err)
+	}
+
+	if got := b.startCount("a"); got != 2 {
+		t.Fatalf("backend.Start called %d times, want 2 (initial start + cold start after Discard)", got)
+	}
+}
+
+func TestManagerDiscardStaleURLNoop(t *testing.T) {
+	b := newFakeBackend()
+	m := NewManager(b, []discovery.Function{fn("a")})
+
+	if _, err := m.Ensure(context.Background(), "a"); err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+
+	first := b.instance("a")
+
+	if err := m.Discard(context.Background(), "a", "http://stale.invalid"); err != nil {
+		t.Fatalf("Discard() with stale URL error = %v, want nil (no-op)", err)
+	}
+
+	if first.stopped {
+		t.Fatalf("Discard() with stale URL stopped the current instance")
+	}
+
+	url, err := m.Ensure(context.Background(), "a")
+	if err != nil {
+		t.Fatalf("Ensure() after Discard() error = %v", err)
+	}
+	if url != first.InvokeURL() {
+		t.Fatalf("Ensure() after Discard() with stale URL returned %q, want the untouched instance's URL %q", url, first.InvokeURL())
+	}
+
+	if got := b.startCount("a"); got != 1 {
+		t.Fatalf("backend.Start called %d times, want 1 (Discard with a stale URL must not evict the current instance)", got)
+	}
+}
+
+func TestManagerDiscardUnknownFunction(t *testing.T) {
+	m := NewManager(newFakeBackend(), []discovery.Function{fn("a")})
+
+	err := m.Discard(context.Background(), "missing", "http://example.invalid")
+	if !errors.Is(err, ErrUnknownFunction) {
+		t.Fatalf("Discard(missing) error = %v, want errors.Is ErrUnknownFunction", err)
+	}
+}
+
+func TestManagerDiscardNothingCachedNoop(t *testing.T) {
+	m := NewManager(newFakeBackend(), []discovery.Function{fn("a")})
+
+	if err := m.Discard(context.Background(), "a", "http://example.invalid"); err != nil {
+		t.Fatalf("Discard() on a never-started function error = %v, want nil (no-op)", err)
+	}
+}
+
 func TestManagerStopAll(t *testing.T) {
 	b := newFakeBackend()
 	m := NewManager(b, []discovery.Function{fn("a"), fn("b")})

@@ -220,6 +220,51 @@ func (m *Manager) Restart(ctx context.Context, name string) error {
 	return nil
 }
 
+// Discard stops and forgets name's cached instance, but only if it is still
+// the one whose InvokeURL is invokeURL — the identity check keeps a caller
+// that just watched an instance die from evicting a healthy replacement
+// some other request already started in the meantime. See
+// plans/dead-runtime-and-provided-container.md Unit A: the router calls
+// Discard after an invoke reveals its instance is dead (a transport failure
+// or a Runtime.ExitError envelope), so the next Ensure cold-starts a fresh
+// one instead of the function being bricked until a code-change Restart.
+//
+// Unlike Restart, Discard takes only the start guard
+// (m.namedMutex(m.starts, name)), never the invoke lock: the instance is
+// presumed dead already, so blocking behind a doomed in-flight invoke (up to
+// the function's own timeout) would only serialize recovery for nothing.
+// Callers invoke Discard after releasing their own WithLock, once the dead
+// invoke has already returned. name must be a known function; unknown names
+// report ErrUnknownFunction, same as Ensure/Restart.
+func (m *Manager) Discard(ctx context.Context, name, invokeURL string) error {
+	if _, ok := m.fns[name]; !ok {
+		return fmt.Errorf("router: %w: %s", ErrUnknownFunction, name)
+	}
+
+	startMu := m.namedMutex(m.starts, name)
+	startMu.Lock()
+	defer startMu.Unlock()
+
+	m.instMu.Lock()
+	inst, ok := m.instances[name]
+	if ok && inst.InvokeURL() == invokeURL {
+		delete(m.instances, name)
+	} else {
+		ok = false
+	}
+	m.instMu.Unlock()
+
+	if !ok {
+		return nil
+	}
+
+	if err := inst.Stop(ctx); err != nil {
+		return fmt.Errorf("router: discarding %s: %w", name, err)
+	}
+
+	return nil
+}
+
 // InvokeTimeout returns the invoke deadline for name: its manifest's
 // timeout when set, else defaultInvokeTimeout. Unknown names also return
 // the default — Ensure is the one responsible for rejecting those.
