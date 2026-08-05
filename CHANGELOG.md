@@ -125,6 +125,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   from a dotenv-style file (`KEY=VALUE` per line, `#` comments, optional
   `export` prefix), merged under the manifest's own `environment` block —
   explicit `environment` keys always win on conflict.
+- **Ruby on the process backend**: `ruby*` functions now run natively
+  through a dependency-free embedded shim, the same as Node and Python,
+  including AWS's own Ruby handler notation — class/module handlers like
+  `file.Class.method`, not just a top-level function.
+- **Automatic container fallback for the process backend**: a function
+  whose runtime has no process-backend shim (Java, .NET, …) now runs in a
+  container automatically, with a one-line notice, instead of failing the
+  invoke; it only errors when no container runtime is available either.
 
 ### Fixed
 

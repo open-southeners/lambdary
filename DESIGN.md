@@ -187,15 +187,19 @@ binary built from pinned upstream source:
 - Per function, Lambdary spawns one RIE subprocess on an ephemeral port; the
   RIE itself spawns the runtime process with `AWS_LAMBDA_RUNTIME_API` wired
   up, exactly as in AWS's base images.
-- *(Amended in M3.)* The runtime process is a tiny dependency-free **shim**
-  per language family (Node, Python) that speaks the versioned Runtime API
-  and loads the handler — not the official RICs as originally written:
-  `aws-lambda-ric`/`awslambdaric` both carry native C/C++ components that
-  would require per-function compile toolchains, exactly the friction this
-  project exists to remove. The Runtime API is small and frozen, so the shim
-  surface is ~120 lines per language. Custom runtimes (`provided.*`) run the
-  function's own `bootstrap` directly; `local.command` overrides everything
-  when a project wants the real RIC or anything else.
+- *(Amended in M3; extended to Ruby post-v0.)* The runtime process is a tiny
+  dependency-free **shim** per language family (Node, Python, Ruby) that
+  speaks the versioned Runtime API and loads the handler — not the official
+  RICs as originally written: `aws-lambda-ric`/`awslambdaric` both carry
+  native C/C++ components that would require per-function compile
+  toolchains, exactly the friction this project exists to remove. The
+  Runtime API is small and frozen, so the shim surface is ~120 lines per
+  language. Custom runtimes (`provided.*`) run the function's own
+  `bootstrap` directly; `local.command` overrides everything when a project
+  wants the real RIC or anything else. A runtime family with no shim yet
+  (Java, .NET, …) isn't a dead end: `internal/cli` detects it ahead of time
+  and falls back to the container backend for just that function, so the
+  process backend never has to cover every official runtime itself.
 - **M0 spike (required):** verify the pinned RIE tag cross-compiles and runs
   on darwin — AWS only ships Linux binaries, though the source shows no
   OS-specific files. If darwin builds fail, the recorded fallback is a

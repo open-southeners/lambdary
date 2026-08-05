@@ -40,7 +40,7 @@ aws lambda invoke --endpoint-url http://127.0.0.1:8000 --function-name api out.j
 
 | | Container (default when available) | Process (fallback) |
 |---|---|---|
-| Runs on | AWS's official `public.ecr.aws/lambda/*` base images | Your host-installed runtimes (`node`, `python3`, …) |
+| Runs on | AWS's official `public.ecr.aws/lambda/*` base images | Your host-installed runtimes (`node`, `python3`, `ruby`, …) |
 | Requires | Docker, Podman, Finch, or nerdctl | `git` + `go` once, to build AWS's emulator from pinned source |
 | Fidelity | Amazon Linux, the real deal | Real Lambda Runtime API semantics, host OS and runtime versions |
 
@@ -49,8 +49,12 @@ Both backends drive your code through AWS's own
 Lambdary does not reimplement Lambda. With `--backend auto` (the default),
 Lambdary uses containers when a runtime is up and falls back to the process
 backend with a notice when it isn't. The process backend supports Node,
-Python, and custom runtimes (any `provided.*` function with a `bootstrap`
-executable — Bref-style PHP works out of the box).
+Python, Ruby, and custom runtimes (any `provided.*` function with a
+`bootstrap` executable — Bref-style PHP works out of the box). A function
+whose runtime has no process-backend shim (Java, .NET, …) still runs: it
+falls back to the container backend automatically, with a notice, so
+`--backend process`/`auto` never fail a function outright just because
+that language isn't shimmed yet.
 
 ## Getting started
 
