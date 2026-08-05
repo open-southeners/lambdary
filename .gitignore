@@ -27,3 +27,9 @@ __pycache__/
 # Per-target RIE binary CI places here before an embedrie build (see
 # internal/rie/embedded/README.md) — never committed, README stays tracked.
 /internal/rie/embedded/aws-lambda-rie
+
+# examples/screenshot-node's Playwright dependency (examples/screenshot-node/README.md)
+examples/screenshot-node/node_modules/
+
+# Example output from README curl/manual testing
+examples/**/*.png

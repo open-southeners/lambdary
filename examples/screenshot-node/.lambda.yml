@@ -1,0 +1,12 @@
+runtime: nodejs22.x
+handler: handler.handler
+timeout: 30
+memory: 1024
+local:
+  # Playwright's downloaded Chromium needs shared libraries the minimal
+  # public.ecr.aws/lambda/nodejs container image doesn't have, so this one
+  # runs on the process backend (your host's own node) instead of auto
+  # picking the container backend when Docker is available.
+  backend: process
+url:
+  path: /screenshot
