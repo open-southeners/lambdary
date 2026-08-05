@@ -1,0 +1,8 @@
+runtime: python3.13
+handler: lambda_function.handler
+timeout: 30
+memory: 512
+environment:
+  THUMBNAIL_MAX_SIZE: "200"
+url:
+  path: /thumbnail

@@ -31,5 +31,15 @@ __pycache__/
 # examples/screenshot-node's Playwright dependency (examples/screenshot-node/README.md)
 examples/screenshot-node/node_modules/
 
+# examples/thumbnail-python vendors Pillow flat, Lambda-zip style, via
+# `pip install -r requirements.txt -t .` (examples/thumbnail-python/README.md) —
+# ignore everything pip drops in except the tracked source files.
+examples/thumbnail-python/*
+!examples/thumbnail-python/*.py
+!examples/thumbnail-python/*.yml
+!examples/thumbnail-python/*.txt
+!examples/thumbnail-python/README.md
+
 # Example output from README curl/manual testing
 examples/**/*.png
+examples/**/*.jpg
