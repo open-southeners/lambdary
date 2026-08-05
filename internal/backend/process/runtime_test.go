@@ -41,6 +41,20 @@ func TestRuntimeCommand(t *testing.T) {
 		}
 	})
 
+	t.Run("ruby* runs the ruby shim with the handler as argv", func(t *testing.T) {
+		fn := discovery.Function{Name: "hello", Runtime: "ruby3.3", Handler: "function.handler", Manifest: &manifest.Manifest{}}
+
+		name, args, err := runtimeCommand(fn, "/abs/hello", "/shims/abc123")
+		if err != nil {
+			t.Fatalf("runtimeCommand() unexpected error: %v", err)
+		}
+
+		wantName, wantArgs := "ruby", []string{"/shims/abc123/bootstrap.rb", "function.handler"}
+		if name != wantName || !reflect.DeepEqual(args, wantArgs) {
+			t.Errorf("runtimeCommand() = (%q, %v), want (%q, %v)", name, args, wantName, wantArgs)
+		}
+	})
+
 	t.Run("provided.* runs the function's own executable bootstrap", func(t *testing.T) {
 		dir := t.TempDir()
 		writeExecutable(t, filepath.Join(dir, "bootstrap"), "#!/bin/sh\necho hi\n")
@@ -81,13 +95,13 @@ func TestRuntimeCommand(t *testing.T) {
 	})
 
 	t.Run("unsupported runtime family errors naming the runtime", func(t *testing.T) {
-		fn := discovery.Function{Name: "hello", Runtime: "ruby3.3", Manifest: &manifest.Manifest{}}
+		fn := discovery.Function{Name: "hello", Runtime: "java21", Manifest: &manifest.Manifest{}}
 
 		_, _, err := runtimeCommand(fn, t.TempDir(), "/shims/abc123")
 		if !errors.Is(err, ErrRuntimeNotSupported) {
 			t.Errorf("runtimeCommand() error = %v, want wrapping ErrRuntimeNotSupported", err)
 		}
-		if err != nil && !strings.Contains(err.Error(), "ruby3.3") {
+		if err != nil && !strings.Contains(err.Error(), "java21") {
 			t.Errorf("runtimeCommand() error = %v, want it to name the runtime", err)
 		}
 	})

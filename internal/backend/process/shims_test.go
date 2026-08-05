@@ -34,6 +34,14 @@ func TestWriteShims(t *testing.T) {
 	if string(pythonContent) != string(pythonShim) {
 		t.Error("written python shim content does not match the embedded shim")
 	}
+
+	rubyContent, err := os.ReadFile(filepath.Join(dir, rubyShimName))
+	if err != nil {
+		t.Fatalf("reading written ruby shim: %v", err)
+	}
+	if string(rubyContent) != string(rubyShim) {
+		t.Error("written ruby shim content does not match the embedded shim")
+	}
 }
 
 func TestWriteShimsIsIdempotent(t *testing.T) {
@@ -45,9 +53,9 @@ func TestWriteShimsIsIdempotent(t *testing.T) {
 	}
 
 	// Tamper with one shim's mtime-sensitive content marker: writeShims
-	// must treat "both files already present" as done and not rewrite
-	// them, so overwrite one with different content and confirm a second
-	// call leaves it alone.
+	// must treat "all files already present" as done and not rewrite them,
+	// so overwrite one with different content and confirm a second call
+	// leaves it alone.
 	marker := filepath.Join(dir1, nodeShimName)
 	if err := os.WriteFile(marker, []byte("tampered"), 0o644); err != nil {
 		t.Fatalf("tampering with written shim: %v", err)

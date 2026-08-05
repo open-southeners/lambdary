@@ -39,7 +39,8 @@ var ErrRuntimeNotSupported = errors.New("runtime not supported by the process ba
 // runtimeCommand resolves the command Start spawns as the RIE's trailing
 // argv — the process the RIE's internal Runtime API talks to. absDir is
 // fn's directory (absolute); shimDir is where writeShims wrote the embedded
-// Node/Python shims. Resolution order, per plans/m3-process-path.md Unit B:
+// Node/Python/Ruby shims. Resolution order, per plans/m3-process-path.md
+// Unit B and plans/process-ruby-and-container-fallback.md Unit A:
 //
 //  1. local.command, if set: run it via `sh -c <command>`. cwd is always
 //     the function directory regardless of which branch is taken (spawn
@@ -47,9 +48,10 @@ var ErrRuntimeNotSupported = errors.New("runtime not supported by the process ba
 //     here.
 //  2. nodejs* runtimes: `node <shimDir>/bootstrap.mjs <handler>`.
 //  3. python* runtimes: `python3 <shimDir>/bootstrap.py <handler>`.
-//  4. provided.* runtimes: the function's own `./bootstrap`, which must
+//  4. ruby* runtimes: `ruby <shimDir>/bootstrap.rb <handler>`.
+//  5. provided.* runtimes: the function's own `./bootstrap`, which must
 //     exist and be executable — ErrBootstrapMissing otherwise.
-//  5. anything else: ErrRuntimeNotSupported, naming the runtime.
+//  6. anything else: ErrRuntimeNotSupported, naming the runtime.
 func runtimeCommand(fn discovery.Function, absDir, shimDir string) (name string, args []string, err error) {
 	m := fn.Manifest
 	if m == nil {
@@ -65,6 +67,8 @@ func runtimeCommand(fn discovery.Function, absDir, shimDir string) (name string,
 		return "node", []string{filepath.Join(shimDir, nodeShimName), fn.Handler}, nil
 	case strings.HasPrefix(fn.Runtime, "python"):
 		return "python3", []string{filepath.Join(shimDir, pythonShimName), fn.Handler}, nil
+	case strings.HasPrefix(fn.Runtime, "ruby"):
+		return "ruby", []string{filepath.Join(shimDir, rubyShimName), fn.Handler}, nil
 	case strings.HasPrefix(fn.Runtime, "provided"):
 		bootstrap := filepath.Join(absDir, "bootstrap")
 

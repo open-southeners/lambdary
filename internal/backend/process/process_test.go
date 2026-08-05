@@ -248,7 +248,7 @@ func TestProcessBackendStart(t *testing.T) {
 
 	t.Run("unsupported runtime errors before ever spawning", func(t *testing.T) {
 		b := &processBackend{riePath: "/should-not-be-invoked", home: t.TempDir()}
-		fn := discovery.Function{Name: "hello", Dir: t.TempDir(), Runtime: "ruby3.3", Manifest: &manifest.Manifest{}}
+		fn := discovery.Function{Name: "hello", Dir: t.TempDir(), Runtime: "java21", Manifest: &manifest.Manifest{}}
 
 		_, err := b.Start(context.Background(), fn)
 		if !errors.Is(err, ErrRuntimeNotSupported) {

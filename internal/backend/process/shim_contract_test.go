@@ -18,11 +18,13 @@ import (
 )
 
 // This file drives the embedded shims (shims/bootstrap.mjs,
-// shims/bootstrap.py) as real child processes against a stub Runtime API
-// server, per plans/m3-process-path.md Unit B's shim test requirements. No
-// RIE is involved — the shims only ever talk to $AWS_LAMBDA_RUNTIME_API,
-// which the real RIE normally sets; here the stub server plays that role
-// directly. Full RIE integration is Unit C's e2e territory.
+// shims/bootstrap.py, shims/bootstrap.rb) as real child processes against a
+// stub Runtime API server, per plans/m3-process-path.md Unit B's shim test
+// requirements (Ruby added by plans/process-ruby-and-container-fallback.md
+// Unit A). No RIE is involved — the shims only ever talk to
+// $AWS_LAMBDA_RUNTIME_API, which the real RIE normally sets; here the stub
+// server plays that role directly. Full RIE integration is Unit C's e2e
+// territory.
 
 // capturedRequest is one POST the shim under test made to the stub's
 // response/error/init-error endpoints.
@@ -192,6 +194,17 @@ func pythonShimPath(t *testing.T) string {
 	abs, err := filepath.Abs(filepath.Join("shims", pythonShimName))
 	if err != nil {
 		t.Fatalf("resolving python shim path: %v", err)
+	}
+
+	return abs
+}
+
+func rubyShimPath(t *testing.T) string {
+	t.Helper()
+
+	abs, err := filepath.Abs(filepath.Join("shims", rubyShimName))
+	if err != nil {
+		t.Fatalf("resolving ruby shim path: %v", err)
 	}
 
 	return abs
@@ -369,6 +382,102 @@ func TestPythonShim(t *testing.T) {
 		}
 
 		assertExitCode(t, waitExit(t, sp), 1)
+	})
+}
+
+func TestRubyShim(t *testing.T) {
+	ruby := requireBin(t, "ruby")
+	shim := rubyShimPath(t)
+
+	t.Run("happy path: next -> handler -> response", func(t *testing.T) {
+		addr, captures := newRuntimeAPIStub(t, []byte(`{"ping":"pong"}`), "req-1")
+		startShim(t, ruby, []string{shim, "handler.handler"}, "testdata/ruby", addr)
+
+		c := waitCapture(t, captures)
+		if c.kind != "response" {
+			t.Fatalf("captured request kind = %q, want %q (body: %s)", c.kind, "response", c.body)
+		}
+
+		var got struct {
+			Echoed       map[string]any `json:"echoed"`
+			RequestID    string         `json:"requestId"`
+			FunctionName string         `json:"functionName"`
+		}
+		if err := json.Unmarshal(c.body, &got); err != nil {
+			t.Fatalf("unmarshalling response body %q: %v", c.body, err)
+		}
+
+		if got.Echoed["ping"] != "pong" {
+			t.Errorf("response echoed = %v, want the invocation event echoed back", got.Echoed)
+		}
+		if got.RequestID != "req-1" {
+			t.Errorf("response requestId = %q, want %q", got.RequestID, "req-1")
+		}
+		if got.FunctionName != "test-fn" {
+			t.Errorf("response functionName = %q, want %q (from AWS_LAMBDA_FUNCTION_NAME)", got.FunctionName, "test-fn")
+		}
+	})
+
+	t.Run("handler exception posts to the error endpoint with an errorType", func(t *testing.T) {
+		addr, captures := newRuntimeAPIStub(t, []byte(`{}`), "req-2")
+		startShim(t, ruby, []string{shim, "handler.throwing"}, "testdata/ruby", addr)
+
+		c := waitCapture(t, captures)
+		if c.kind != "error" {
+			t.Fatalf("captured request kind = %q, want %q (body: %s)", c.kind, "error", c.body)
+		}
+
+		var payload struct {
+			ErrorMessage string   `json:"errorMessage"`
+			ErrorType    string   `json:"errorType"`
+			StackTrace   []string `json:"stackTrace"`
+		}
+		if err := json.Unmarshal(c.body, &payload); err != nil {
+			t.Fatalf("unmarshalling error body %q: %v", c.body, err)
+		}
+
+		if payload.ErrorType != "ArgumentError" {
+			t.Errorf("errorType = %q, want %q", payload.ErrorType, "ArgumentError")
+		}
+		if payload.ErrorMessage != "boom" {
+			t.Errorf("errorMessage = %q, want %q", payload.ErrorMessage, "boom")
+		}
+		if len(payload.StackTrace) == 0 {
+			t.Error("stackTrace is empty, want at least one frame")
+		}
+	})
+
+	t.Run("bad handler spec posts to init/error and exits 1", func(t *testing.T) {
+		addr, captures := newRuntimeAPIStub(t, []byte(`{}`), "req-3")
+		sp := startShim(t, ruby, []string{shim, "nonexistent.handler"}, "testdata/ruby", addr)
+
+		c := waitCapture(t, captures)
+		if c.kind != "init/error" {
+			t.Fatalf("captured request kind = %q, want %q (body: %s)", c.kind, "init/error", c.body)
+		}
+
+		assertExitCode(t, waitExit(t, sp), 1)
+	})
+
+	// Regression test for the same class of bug TestNodeShim's delayed-next
+	// case guards against: bootstrap.rb must disable Net::HTTP's default
+	// 60s read_timeout on the long-polling GET .../invocation/next, or an
+	// idle dev server between invocations would crash the shim with a
+	// Net::ReadTimeout. See bootstrap.rb's next_invocation doc comment.
+	t.Run("survives a delayed next() response", func(t *testing.T) {
+		const delay = 3 * time.Second
+
+		addr, captures := newDelayedRuntimeAPIStub(t, []byte(`{"ping":"pong"}`), "req-delayed", delay)
+		startShim(t, ruby, []string{shim, "handler.handler"}, "testdata/ruby", addr)
+
+		select {
+		case c := <-captures:
+			if c.kind != "response" {
+				t.Fatalf("captured request kind = %q, want %q (body: %s)", c.kind, "response", c.body)
+			}
+		case <-time.After(delay + 5*time.Second):
+			t.Fatal("timed out waiting for the shim to respond after a delayed next()")
+		}
 	})
 }
 
