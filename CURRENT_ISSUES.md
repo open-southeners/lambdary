@@ -55,3 +55,26 @@ Discovered during orchestrated work; routed here instead of fixed inline.
 - **Fix:** per-runtime build hooks (e.g. `go build -o bootstrap` in-container
   or on host) before start/restart, or document that compiled runtimes
   require a `Dockerfile` or a manual build step.
+
+## `provided.*` on the container backend cannot work without a Dockerfile (bug)
+
+- **Where:** `internal/backend/container/argv.go` (`runArgs`).
+- **What:** worse than the gap above — even a hand-built `bootstrap` binary
+  sitting in the function directory can never run, Dockerfile or not.
+  `runArgs` only appends a CMD argument when `fn.Handler` is set, but
+  `provided.*` functions have no `handler` key (see `internal/cli/init.go`'s
+  own `provided.al2023` scaffold), so no CMD arg reaches the container.
+  `public.ecr.aws/lambda/provided:al2023`'s entrypoint
+  (`/lambda-entrypoint.sh`) then exits immediately with "entrypoint requires
+  the handler name to be the first argument". Even past that, its
+  `RUNTIME_ENTRYPOINT` is hardcoded to `/var/runtime/bootstrap` — empty in
+  the base image — never `/var/task/bootstrap`, so the function's own
+  bind-mounted `bootstrap` would never be found either way. Confirmed by
+  hand against the real image while building `examples/checksum-go`, which
+  works around it with a function-owned `Dockerfile` that `COPY`s the
+  compiled binary to `/var/runtime/bootstrap` instead.
+- **Fix:** either always pass a placeholder CMD arg and bind-mount/copy the
+  function's `bootstrap` to `/var/runtime/bootstrap` before `docker run`, or
+  accept this combination isn't supported and say so — in `validateInitRuntime`
+  / README's backend table — that `provided.*` needs a `Dockerfile` to run on
+  the container backend.
