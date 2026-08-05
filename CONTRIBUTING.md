@@ -29,13 +29,33 @@ external contribution and/or help (if it follows these guidelines).
 
 ## Development Workflow
 
-Lambdary is a plain Go project — no code generation, no build scripts:
+Lambdary is a plain Go project — no code generation:
 
 ```sh
-go build ./...           # build everything
+go build ./...           # build everything, no binary output (compile check)
 go test ./... -short     # fast suite (no Docker / no network)
 go test ./...            # full suite — see below
 ```
+
+To get a runnable `lambdary` binary for your own platform (what
+`go build ./...` above doesn't produce, since `cmd/lambdary` is one package
+among several under `./...`), use `scripts/build.sh`. It mirrors what the
+release workflow does for each of its four cross-compiled targets
+(`.github/workflows/release.yml`'s `binaries` job) but only for your current
+`GOOS`/`GOARCH`, and skips packaging a tarball:
+
+```sh
+scripts/build.sh                        # dist/lambdary, with embedded RIE
+LAMBDARY_SKIP_RIE_EMBED=1 scripts/build.sh   # skip the RIE build/embed step
+```
+
+The default run builds AWS's Runtime Interface Emulator from source and
+embeds it into the binary (needs `git` + `go`, network, ~30s on first run;
+cached at `internal/rie/embedded/aws-lambda-rie` and reused by subsequent
+runs — delete it to rebuild for a different platform). Pass
+`LAMBDARY_SKIP_RIE_EMBED=1` for a faster build that behaves like a plain
+`go install`: the process backend falls back to building the emulator from
+source on first use instead of finding it pre-embedded.
 
 `DESIGN.md` documents the architecture and is the source of truth for how
 the pieces fit together; `plans/` holds the per-milestone implementation
