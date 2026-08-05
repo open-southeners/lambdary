@@ -40,6 +40,12 @@ examples/thumbnail-python/*
 !examples/thumbnail-python/*.txt
 !examples/thumbnail-python/README.md
 
+# examples/checksum-go builds its bootstrap binary inside Docker (see its
+# Dockerfile) — these only catch a stray local `go build`/`go build -o
+# bootstrap .` run by hand
+examples/checksum-go/bootstrap
+examples/checksum-go/checksum-go
+
 # Example output from README curl/manual testing
 examples/**/*.png
 examples/**/*.jpg

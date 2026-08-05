@@ -1,0 +1,7 @@
+# No `runtime` and no `local.backend` here — the Dockerfile marker alone
+# is enough for lambdary to detect this as a container function and build
+# it automatically. See README.md.
+timeout: 15
+memory: 256
+url:
+  path: /checksum
