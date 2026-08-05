@@ -71,7 +71,7 @@ process backend section.
                        │  docker/podman run    vendored RIE binary    │
                        │  AWS base image       (pinned AWS source)    │
                        │  (RIE built in,       driving host runtime   │
-                       │   port 8080)          + official RIC         │
+                       │   port 8080)          + embedded shim        │
                        └──────────────────────────────────────────────┘
                                   ▲                   ▲
                             fsnotify watcher: restart on code change
@@ -155,8 +155,8 @@ per-project defaults that individual `.lambda.yml` files inherit.
 
 1. If a container runtime is available (probe in order: `docker`, `podman`,
    `finch`, `nerdctl` — CLI presence + daemon/socket reachable) → **container**.
-2. Else if the required host runtime binary exists (`node`, `php`, `python3`,
-   …) → **process**.
+2. Else if the required host runtime binary exists (`node`, `python3`,
+   `ruby`, …) → **process**.
 3. Else fail with a message that names both remedies ("install Docker, or
    install Node 22+").
 

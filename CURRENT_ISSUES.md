@@ -52,16 +52,3 @@ Discovered during orchestrated work; routed here instead of fixed inline.
 - **Fix:** per-runtime build hooks (e.g. `go build -o bootstrap` in-container
   or on host) before start/restart, or document that compiled runtimes
   require a `Dockerfile` or a manual build step.
-
-## Stale pre-M3 process-backend claims in DESIGN.md (doc drift)
-
-- **Where:** `DESIGN.md` — backend-selection list (~line 158) and the
-  architecture diagram (~line 74).
-- **What:** the selection list checks for a `php` host binary, but PHP
-  actually runs via the generic `provided.*`/`bootstrap` convention, not a
-  `php`-specific probe; the diagram still says the process backend drives
-  "host runtime + official RIC", which M3 replaced with the embedded shims
-  (the prose right below it is already amended, the diagram never was).
-- **Fix:** drop `php` from the binary-probe list and reword the diagram's
-  process-backend box to say shim (or `bootstrap`) instead of RIC — pure
-  doc edits, no behavior involved.
