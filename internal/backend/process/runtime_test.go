@@ -139,6 +139,45 @@ func TestRuntimeCommand(t *testing.T) {
 	})
 }
 
+func TestSupports(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   discovery.Function
+		want bool
+	}{
+		{"nodejs* is supported", discovery.Function{Runtime: "nodejs22.x"}, true},
+		{"python* is supported", discovery.Function{Runtime: "python3.13"}, true},
+		{"ruby* is supported", discovery.Function{Runtime: "ruby3.3"}, true},
+		{"provided.* is supported even without a bootstrap file", discovery.Function{Runtime: "provided.al2023"}, true},
+		{"java is not supported", discovery.Function{Runtime: "java21"}, false},
+		{"dotnet is not supported", discovery.Function{Runtime: "dotnet8"}, false},
+		{"empty runtime with no local.command is not supported", discovery.Function{}, false},
+		{
+			"local.command wins regardless of runtime",
+			discovery.Function{Runtime: "java21", Manifest: &manifest.Manifest{Local: manifest.Local{Command: "./my-custom-runtime"}}},
+			true,
+		},
+		{
+			"local.command with no runtime set at all is still supported",
+			discovery.Function{Manifest: &manifest.Manifest{Local: manifest.Local{Command: "./my-custom-runtime"}}},
+			true,
+		},
+		{
+			"nil manifest with an unsupported runtime behaves like an empty one",
+			discovery.Function{Runtime: "java21", Manifest: nil},
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Supports(tt.fn); got != tt.want {
+				t.Errorf("Supports(%+v) = %v, want %v", tt.fn, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRieArgs(t *testing.T) {
 	got := rieArgs(54321, 54322, "node", []string{"/shims/x/bootstrap.mjs", "index.handler"})
 

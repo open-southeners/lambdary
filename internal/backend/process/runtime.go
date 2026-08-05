@@ -33,8 +33,62 @@ var ErrBootstrapMissing = errors.New("no executable bootstrap file found for a c
 // ErrRuntimeNotSupported indicates fn.Runtime isn't one the process backend
 // can run yet — see plans/m3-process-path.md's Unit B scope (Node, Python,
 // and custom runtimes only) and CURRENT_ISSUES.md for the deferred
-// families.
+// families. Since plans/process-ruby-and-container-fallback.md's Unit B,
+// internal/cli catches this ahead of time via Supports and falls back to
+// the container backend instead of letting an invoke fail outright, so in
+// practice this error now only surfaces when that fallback itself has
+// nowhere to go (no usable container runtime either).
 var ErrRuntimeNotSupported = errors.New("runtime not supported by the process backend yet")
+
+// nodeRuntimePrefix, pythonRuntimePrefix, and rubyRuntimePrefix are the
+// fn.Runtime prefixes runtimeCommand's switch and Supports both recognize
+// as having an embedded shim; providedRuntimePrefix is recognized too, but
+// runs the function's own ./bootstrap instead of a shim (see
+// runtimeCommand's provided.* branch). Named consts instead of inline
+// string literals so processRuntimePrefixes below and runtimeCommand's
+// switch cases can't drift apart — see processRuntimePrefixes' comment.
+const (
+	nodeRuntimePrefix     = "nodejs"
+	pythonRuntimePrefix   = "python"
+	rubyRuntimePrefix     = "ruby"
+	providedRuntimePrefix = "provided"
+)
+
+// processRuntimePrefixes lists every fn.Runtime prefix the process backend
+// can run: it's the single source of truth Supports iterates, built from
+// the same named consts runtimeCommand's switch cases use below, so the two
+// can never recognize a different set of runtimes — the drift
+// plans/process-ruby-and-container-fallback.md's Unit B calls out as the
+// reason Supports must not hand-maintain its own copy of this list.
+var processRuntimePrefixes = []string{nodeRuntimePrefix, pythonRuntimePrefix, rubyRuntimePrefix, providedRuntimePrefix}
+
+// Supports reports whether the process backend can run fn: true when the
+// function's manifest sets local.command (runtimeCommand's local.command
+// branch handles it regardless of fn.Runtime), or fn.Runtime has one of
+// processRuntimePrefixes. It exists so internal/cli can decide, *before*
+// calling Start, whether to fall back to the container backend instead of
+// only discovering ErrRuntimeNotSupported after a spawn attempt fails — see
+// plans/process-ruby-and-container-fallback.md's Unit B ("container
+// fallback for unsupported runtimes"). Note that provided.* counts as
+// supported here even when the function's own ./bootstrap file is missing
+// or non-executable: that's ErrBootstrapMissing, a configuration mistake
+// the container backend would hit too (it needs that same bootstrap file),
+// not a missing-shim gap — so it must stay a hard error rather than
+// silently triggering a container fallback.
+func Supports(fn discovery.Function) bool {
+	m := fn.Manifest
+	if m != nil && m.Local.Command != "" {
+		return true
+	}
+
+	for _, prefix := range processRuntimePrefixes {
+		if strings.HasPrefix(fn.Runtime, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
 
 // runtimeCommand resolves the command Start spawns as the RIE's trailing
 // argv — the process the RIE's internal Runtime API talks to. absDir is
@@ -51,7 +105,10 @@ var ErrRuntimeNotSupported = errors.New("runtime not supported by the process ba
 //  4. ruby* runtimes: `ruby <shimDir>/bootstrap.rb <handler>`.
 //  5. provided.* runtimes: the function's own `./bootstrap`, which must
 //     exist and be executable — ErrBootstrapMissing otherwise.
-//  6. anything else: ErrRuntimeNotSupported, naming the runtime.
+//  6. anything else: ErrRuntimeNotSupported, naming the runtime — Supports
+//     above reports false for exactly this case, so internal/cli's
+//     per-function resolver and standalone invoke path never actually reach
+//     this branch in practice; it stays as a safety net.
 func runtimeCommand(fn discovery.Function, absDir, shimDir string) (name string, args []string, err error) {
 	m := fn.Manifest
 	if m == nil {
@@ -63,13 +120,13 @@ func runtimeCommand(fn discovery.Function, absDir, shimDir string) (name string,
 	}
 
 	switch {
-	case strings.HasPrefix(fn.Runtime, "nodejs"):
+	case strings.HasPrefix(fn.Runtime, nodeRuntimePrefix):
 		return "node", []string{filepath.Join(shimDir, nodeShimName), fn.Handler}, nil
-	case strings.HasPrefix(fn.Runtime, "python"):
+	case strings.HasPrefix(fn.Runtime, pythonRuntimePrefix):
 		return "python3", []string{filepath.Join(shimDir, pythonShimName), fn.Handler}, nil
-	case strings.HasPrefix(fn.Runtime, "ruby"):
+	case strings.HasPrefix(fn.Runtime, rubyRuntimePrefix):
 		return "ruby", []string{filepath.Join(shimDir, rubyShimName), fn.Handler}, nil
-	case strings.HasPrefix(fn.Runtime, "provided"):
+	case strings.HasPrefix(fn.Runtime, providedRuntimePrefix):
 		bootstrap := filepath.Join(absDir, "bootstrap")
 
 		info, statErr := os.Stat(bootstrap)

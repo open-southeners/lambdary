@@ -26,9 +26,24 @@ func validateBackend(v string) error {
 	}
 }
 
+// backendKindContainer and backendKindProcess are the machine-readable kind
+// constants resolveBackend and friends return alongside their
+// human-readable display name ("container (docker)", "process (host
+// runtimes)", ...) — added for
+// plans/process-ruby-and-container-fallback.md's Unit B, so callers that
+// need to know *which* kind "auto" actually picked (to decide whether a
+// container fallback applies) can compare against these instead of parsing
+// the display string.
+const (
+	backendKindContainer = "container"
+	backendKindProcess   = "process"
+)
+
 // resolveBackend builds the backend.Backend --backend=mode names, shared by
 // `dev` (runDev) and `invoke`'s standalone mode (invokeStandalone), per
-// plans/m3-process-path.md's Unit C. It returns the backend along with a
+// plans/m3-process-path.md's Unit C. It returns the backend along with its
+// machine-readable kind (backendKindContainer/backendKindProcess — see
+// plans/process-ruby-and-container-fallback.md's Unit B) and a
 // human-readable, already-formatted name for the startup/summary output
 // ("container (docker)", "process (host runtimes)", ...). lock is the
 // project's `.lambdary/lock` (see internal/lockfile.Load), or nil for
@@ -53,7 +68,7 @@ func validateBackend(v string) error {
 //     prints a single notice to errW and falls back to process. Any other
 //     container-detection error fails outright rather than falling back,
 //     since it isn't one of the "no usable container runtime" cases.
-func resolveBackend(ctx context.Context, mode string, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (backend.Backend, string, error) {
+func resolveBackend(ctx context.Context, mode string, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (b backend.Backend, kind, name string, err error) {
 	switch mode {
 	case "", "auto":
 		return resolveAutoBackend(ctx, runner, errW, lock)
@@ -62,16 +77,16 @@ func resolveBackend(ctx context.Context, mode string, runner backend.Runner, err
 	case "process":
 		return resolveProcessBackend(ctx, runner, errW, lock)
 	default:
-		return nil, "", fmt.Errorf(`unknown --backend %q: want "auto", "container", or "process"`, mode)
+		return nil, "", "", fmt.Errorf(`unknown --backend %q: want "auto", "container", or "process"`, mode)
 	}
 }
 
 // resolveContainerBackend implements the "container" mode: DetectContainerCLI
 // or fail; lock (nil-able) is threaded into container.NewWithLock/New.
-func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *lockfile.Lock) (backend.Backend, string, error) {
+func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *lockfile.Lock) (backend.Backend, string, string, error) {
 	cli, err := backend.DetectContainerCLI(ctx, runner)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
 	var b backend.Backend
@@ -81,7 +96,7 @@ func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *l
 		b = container.New(cli, runner)
 	}
 
-	return b, fmt.Sprintf("container (%s)", cli), nil
+	return b, backendKindContainer, fmt.Sprintf("container (%s)", cli), nil
 }
 
 // resolveProcessBackend implements the "process" mode: rie.Resolve + build
@@ -90,10 +105,10 @@ func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *l
 // success, a non-nil lock records rie.Version (SetRIE) — best-effort, per
 // plans/m5-extras.md's Unit C: a recording failure is noted on errW rather
 // than failing backend resolution.
-func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (backend.Backend, string, error) {
+func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (backend.Backend, string, string, error) {
 	riePath, err := rie.Resolve(ctx, runner)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
 	if lock != nil {
@@ -102,7 +117,7 @@ func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.W
 		}
 	}
 
-	return process.New(riePath, runner), "process (host runtimes)", nil
+	return process.New(riePath, runner), backendKindProcess, "process (host runtimes)", nil
 }
 
 // resolveAutoBackend implements the "auto" mode: container first, falling
@@ -110,14 +125,14 @@ func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.W
 // runtime simply isn't usable (no CLI on PATH, or a CLI present but its
 // daemon unreachable) — any other error (e.g. a mode="process" fallback
 // itself failing to resolve the RIE) is returned as-is.
-func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (backend.Backend, string, error) {
-	b, name, err := resolveContainerBackend(ctx, runner, lock)
+func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (backend.Backend, string, string, error) {
+	b, kind, name, err := resolveContainerBackend(ctx, runner, lock)
 	if err == nil {
-		return b, name, nil
+		return b, kind, name, nil
 	}
 
 	if !errors.Is(err, backend.ErrNoContainerCLI) && !errors.Is(err, backend.ErrDaemonUnreachable) {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
 	fmt.Fprintf(errW, "no usable container runtime (%s) — falling back to the process backend using host runtimes\n", err)

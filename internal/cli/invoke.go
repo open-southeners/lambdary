@@ -221,10 +221,32 @@ func effectiveInvokeBackendMode(fn discovery.Function, backendFlag string) strin
 // runs on every path once Start succeeds, including invoke errors. lock
 // (nil-able) is threaded into resolveBackend for image-digest
 // pinning/recording, per plans/m5-extras.md's Unit C.
+//
+// When the resolved backend is process and fn's runtime has no
+// process-backend shim (needsContainerFallback), invokeStandalone falls
+// back to the container backend before Start, printing the same one-line
+// notice to errOut that dev's per-function resolver prints — see
+// fallbackToContainerBackend and
+// plans/process-ruby-and-container-fallback.md's Unit B. Standalone invoke
+// has no cross-call cache to dedupe against (it runs once and exits), so
+// the notice is unconditional here, unlike perFunctionBackend's
+// once-per-function guard.
 func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.Function, event []byte, backendFlag string, lock *lockfile.Lock) error {
-	b, _, err := resolveBackend(ctx, effectiveInvokeBackendMode(fn, backendFlag), backend.ExecRunner{}, errOut, lock)
+	b, kind, _, err := resolveBackend(ctx, effectiveInvokeBackendMode(fn, backendFlag), backend.ExecRunner{}, errOut, lock)
 	if err != nil {
 		return err
+	}
+
+	if needsContainerFallback(kind, fn) {
+		b, err = fallbackToContainerBackend(ctx, fn, func(ctx context.Context) (backend.Backend, error) {
+			containerBackend, _, _, err := resolveContainerBackend(ctx, backend.ExecRunner{}, lock)
+			return containerBackend, err
+		}, func() {
+			fmt.Fprint(errOut, containerFallbackNotice(fn))
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	startCtx, cancel := context.WithTimeout(ctx, standaloneStartTimeout)
