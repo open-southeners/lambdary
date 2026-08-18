@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-18
+
+### Changed
+
+- Release binaries now build with Go 1.26.6, closing out every stdlib
+  vulnerability flagged against the previous toolchain (`net/http`,
+  `crypto/tls`, `net/url`, `crypto/x509`, and others).
+
 ### Fixed
 
 - HTTP responses with a body-less status (`204 No Content`, `304 Not
