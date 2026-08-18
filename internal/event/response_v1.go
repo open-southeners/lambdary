@@ -76,8 +76,10 @@ func writeShapedV1(w http.ResponseWriter, statusCode int, resp shapedResponseV1)
 	}
 
 	w.WriteHeader(statusCode)
-	if _, err := w.Write(body); err != nil {
-		return fmt.Errorf("event: writing response body: %w", err)
+	if len(body) > 0 {
+		if _, err := w.Write(body); err != nil {
+			return fmt.Errorf("event: writing response body: %w", err)
+		}
 	}
 
 	return nil

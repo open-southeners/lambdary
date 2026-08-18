@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- HTTP responses with a body-less status (`204 No Content`, `304 Not
+  Modified`, `1xx`) no longer fail with "response status code does not
+  allow body" now that the Go 1.26 standard library enforces that rule
+  strictly.
+
 ## [1.0.0] - 2026-08-05
 
 ### Added
