@@ -46,15 +46,22 @@ type containerBackend struct {
 	runner       backend.Runner
 	readyTimeout time.Duration
 	lock         Lock
+
+	// cacheDir is the project's `.lambdary` directory, used by layer
+	// staging (plans/layers.md's Unit C: `runArgs` will bind-mount
+	// `<cacheDir>/staging/<fn>/` to `/opt`). Currently held, not yet read.
+	cacheDir string
 }
 
 // New returns a backend.Backend that runs functions as containers via cli
 // (e.g. "docker", "podman" — anything backend.DetectContainerCLI resolved),
 // issuing every command through runner so callers can substitute a fake in
-// tests. It has no image-digest lock (see NewWithLock); every image
-// resolves by tag, exactly as before plans/m5-extras.md's Unit C.
-func New(cli string, runner backend.Runner) backend.Backend {
-	return &containerBackend{cli: cli, runner: runner}
+// tests. cacheDir is the project's `.lambdary` directory (see
+// containerBackend's cacheDir field and plans/layers.md's Unit C); it has
+// no image-digest lock (see NewWithLock), so every image resolves by tag,
+// exactly as before plans/m5-extras.md's Unit C.
+func New(cli string, runner backend.Runner, cacheDir string) backend.Backend {
+	return &containerBackend{cli: cli, runner: runner, cacheDir: cacheDir}
 }
 
 // Start resolves fn's image (building it first for a Dockerfile-marker

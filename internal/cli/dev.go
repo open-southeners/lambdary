@@ -133,7 +133,9 @@ func (d *devServer) run(ctx context.Context) error {
 		fmt.Fprintf(d.errOut, "warning: ignoring corrupt .lambdary/lock: %s\n", err)
 	}
 
-	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock)
+	cacheDir := cacheDirFor(d.root)
+
+	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock, cacheDir)
 	if err != nil {
 		return err
 	}

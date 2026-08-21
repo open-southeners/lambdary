@@ -113,7 +113,7 @@ func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root
 		fmt.Fprintf(errOut, "warning: ignoring corrupt .lambdary/lock: %s\n", err)
 	}
 
-	return invokeStandalone(ctx, out, errOut, fn, event, backendFlag, lock)
+	return invokeStandalone(ctx, out, errOut, fn, event, backendFlag, lock, cacheDirFor(root))
 }
 
 // resolveEvent reads the invoke payload from source: a JSON file path,
@@ -220,7 +220,9 @@ func effectiveInvokeBackendMode(fn discovery.Function, backendFlag string) strin
 // the response to out, and stops the instance again — via defer, so Stop
 // runs on every path once Start succeeds, including invoke errors. lock
 // (nil-able) is threaded into resolveBackend for image-digest
-// pinning/recording, per plans/m5-extras.md's Unit C.
+// pinning/recording, per plans/m5-extras.md's Unit C. cacheDir is the
+// project's `.lambdary` directory (see cacheDirFor), threaded alongside
+// lock into every backend this resolves.
 //
 // When the resolved backend is process and fn's runtime has no
 // process-backend shim (needsContainerFallback), invokeStandalone falls
@@ -231,15 +233,15 @@ func effectiveInvokeBackendMode(fn discovery.Function, backendFlag string) strin
 // has no cross-call cache to dedupe against (it runs once and exits), so
 // the notice is unconditional here, unlike perFunctionBackend's
 // once-per-function guard.
-func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.Function, event []byte, backendFlag string, lock *lockfile.Lock) error {
-	b, kind, _, err := resolveBackend(ctx, effectiveInvokeBackendMode(fn, backendFlag), backend.ExecRunner{}, errOut, lock)
+func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.Function, event []byte, backendFlag string, lock *lockfile.Lock, cacheDir string) error {
+	b, kind, _, err := resolveBackend(ctx, effectiveInvokeBackendMode(fn, backendFlag), backend.ExecRunner{}, errOut, lock, cacheDir)
 	if err != nil {
 		return err
 	}
 
 	if needsContainerFallback(kind, fn) {
 		b, err = fallbackToContainerBackend(ctx, fn, func(ctx context.Context) (backend.Backend, error) {
-			containerBackend, _, _, err := resolveContainerBackend(ctx, backend.ExecRunner{}, lock)
+			containerBackend, _, _, err := resolveContainerBackend(ctx, backend.ExecRunner{}, lock, cacheDir)
 			return containerBackend, err
 		}, func() {
 			fmt.Fprint(errOut, containerFallbackNotice(fn))

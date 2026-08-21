@@ -74,7 +74,7 @@ func TestE2E(t *testing.T) {
 		t.Fatalf("DetectContainerCLI() unexpected error: %v", err)
 	}
 
-	b := container.New(cli, runner)
+	b := container.New(cli, runner, t.TempDir())
 	mgr := router.NewManager(b, fns)
 	handler := router.New(mgr, fns)
 
@@ -335,7 +335,7 @@ func TestE2EProcessBackend(t *testing.T) {
 		t.Fatalf("rie.Resolve() unexpected error: %v", err)
 	}
 
-	b := process.New(riePath, runner)
+	b := process.New(riePath, runner, t.TempDir())
 	mgr := router.NewManager(b, fns)
 	handler := router.New(mgr, fns)
 
