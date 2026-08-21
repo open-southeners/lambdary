@@ -67,15 +67,23 @@ type processBackend struct {
 
 	home         string
 	readyTimeout time.Duration
+
+	// cacheDir is the project's `.lambdary` directory, used by layer
+	// staging (plans/layers.md's Unit D: Start's env assembly will point
+	// the runtime's search-path env vars at
+	// `<cacheDir>/staging/<fn>/`). Currently held, not yet read.
+	cacheDir string
 }
 
 // New returns a backend.Backend that runs functions by spawning riePath
 // (the RIE binary — see internal/rie, Unit A, for how callers resolve it)
 // against a host runtime, issuing every command through runner so callers
-// can substitute a fake in tests. See the package doc for why the RIE
-// process itself is spawned via os/exec rather than runner.
-func New(riePath string, runner backend.Runner) backend.Backend {
-	return &processBackend{riePath: riePath, runner: runner}
+// can substitute a fake in tests. cacheDir is the project's `.lambdary`
+// directory (see processBackend's cacheDir field and plans/layers.md's
+// Unit D). See the package doc for why the RIE process itself is spawned
+// via os/exec rather than runner.
+func New(riePath string, runner backend.Runner, cacheDir string) backend.Backend {
+	return &processBackend{riePath: riePath, runner: runner, cacheDir: cacheDir}
 }
 
 // Start writes Lambdary's embedded shims to $LAMBDARY_HOME/shims (once,

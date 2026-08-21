@@ -31,8 +31,10 @@ type Lock interface {
 // plans/m5-extras.md's Unit C (see the pinnable/usedDigest handling in
 // Start); a nil lock is exactly New's existing, unpinned behaviour, so
 // every pre-Unit-C call site keeps compiling and behaving unchanged.
-func NewWithLock(cli string, runner backend.Runner, lock Lock) backend.Backend {
-	return &containerBackend{cli: cli, runner: runner, lock: lock}
+// cacheDir is the project's `.lambdary` directory — see New's doc comment
+// and containerBackend's cacheDir field (plans/layers.md's Unit C).
+func NewWithLock(cli string, runner backend.Runner, lock Lock, cacheDir string) backend.Backend {
+	return &containerBackend{cli: cli, runner: runner, lock: lock, cacheDir: cacheDir}
 }
 
 // digestRef renders image pinned to digest as a `<repo>@<digest>` reference

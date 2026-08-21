@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/backend/container"
@@ -12,6 +13,16 @@ import (
 	"github.com/open-southeners/lambdary/internal/lockfile"
 	"github.com/open-southeners/lambdary/internal/rie"
 )
+
+// cacheDirFor returns the project's `.lambdary` cache directory for root —
+// the same root lockfile.Load(root) reads/writes `.lambdary/lock` under, so
+// `.lambdary/lock` (internal/lockfile), `.lambdary/layers/`, and
+// `.lambdary/staging/` (plans/layers.md's Units B–D) all co-locate. Callers
+// resolve this once, at the same place they call lockfile.Load, and thread
+// it alongside lock through the resolve chain.
+func cacheDirFor(root string) string {
+	return filepath.Join(root, ".lambdary")
+}
 
 // validateBackend checks --backend's value: "" and "auto" both mean the
 // automatic selection DESIGN.md's "Selection (backend: auto)" describes
@@ -48,7 +59,9 @@ const (
 // ("container (docker)", "process (host runtimes)", ...). lock is the
 // project's `.lambdary/lock` (see internal/lockfile.Load), or nil for
 // callers that don't want digest pinning/recording — see
-// plans/m5-extras.md's Unit C.
+// plans/m5-extras.md's Unit C. cacheDir is the project's `.lambdary`
+// directory (see cacheDirFor), threaded into the backends' own cacheDir
+// field for the layer staging plans/layers.md's Units C and D will add.
 //
 //   - "container": resolves via backend.DetectContainerCLI, or fails; the
 //     returned backend pins/records image digests through lock when it's
@@ -68,22 +81,23 @@ const (
 //     prints a single notice to errW and falls back to process. Any other
 //     container-detection error fails outright rather than falling back,
 //     since it isn't one of the "no usable container runtime" cases.
-func resolveBackend(ctx context.Context, mode string, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (b backend.Backend, kind, name string, err error) {
+func resolveBackend(ctx context.Context, mode string, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string) (b backend.Backend, kind, name string, err error) {
 	switch mode {
 	case "", "auto":
-		return resolveAutoBackend(ctx, runner, errW, lock)
+		return resolveAutoBackend(ctx, runner, errW, lock, cacheDir)
 	case "container":
-		return resolveContainerBackend(ctx, runner, lock)
+		return resolveContainerBackend(ctx, runner, lock, cacheDir)
 	case "process":
-		return resolveProcessBackend(ctx, runner, errW, lock)
+		return resolveProcessBackend(ctx, runner, errW, lock, cacheDir)
 	default:
 		return nil, "", "", fmt.Errorf(`unknown --backend %q: want "auto", "container", or "process"`, mode)
 	}
 }
 
 // resolveContainerBackend implements the "container" mode: DetectContainerCLI
-// or fail; lock (nil-able) is threaded into container.NewWithLock/New.
-func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *lockfile.Lock) (backend.Backend, string, string, error) {
+// or fail; lock (nil-able) is threaded into container.NewWithLock/New, and
+// cacheDir (the project's `.lambdary` directory) into its cacheDir field.
+func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *lockfile.Lock, cacheDir string) (backend.Backend, string, string, error) {
 	cli, err := backend.DetectContainerCLI(ctx, runner)
 	if err != nil {
 		return nil, "", "", err
@@ -91,9 +105,9 @@ func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *l
 
 	var b backend.Backend
 	if lock != nil {
-		b = container.NewWithLock(cli, runner, lock)
+		b = container.NewWithLock(cli, runner, lock, cacheDir)
 	} else {
-		b = container.New(cli, runner)
+		b = container.New(cli, runner, cacheDir)
 	}
 
 	return b, backendKindContainer, fmt.Sprintf("container (%s)", cli), nil
@@ -104,8 +118,9 @@ func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *l
 // remedy — missing build tools, a bad $LAMBDARY_RIE_PATH, etc.). On
 // success, a non-nil lock records rie.Version (SetRIE) — best-effort, per
 // plans/m5-extras.md's Unit C: a recording failure is noted on errW rather
-// than failing backend resolution.
-func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (backend.Backend, string, string, error) {
+// than failing backend resolution. cacheDir (the project's `.lambdary`
+// directory) is threaded into process.New's cacheDir field.
+func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string) (backend.Backend, string, string, error) {
 	riePath, err := rie.Resolve(ctx, runner)
 	if err != nil {
 		return nil, "", "", err
@@ -117,7 +132,7 @@ func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.W
 		}
 	}
 
-	return process.New(riePath, runner), backendKindProcess, "process (host runtimes)", nil
+	return process.New(riePath, runner, cacheDir), backendKindProcess, "process (host runtimes)", nil
 }
 
 // resolveAutoBackend implements the "auto" mode: container first, falling
@@ -125,8 +140,8 @@ func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.W
 // runtime simply isn't usable (no CLI on PATH, or a CLI present but its
 // daemon unreachable) — any other error (e.g. a mode="process" fallback
 // itself failing to resolve the RIE) is returned as-is.
-func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock) (backend.Backend, string, string, error) {
-	b, kind, name, err := resolveContainerBackend(ctx, runner, lock)
+func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string) (backend.Backend, string, string, error) {
+	b, kind, name, err := resolveContainerBackend(ctx, runner, lock, cacheDir)
 	if err == nil {
 		return b, kind, name, nil
 	}
@@ -137,5 +152,5 @@ func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writ
 
 	fmt.Fprintf(errW, "no usable container runtime (%s) — falling back to the process backend using host runtimes\n", err)
 
-	return resolveProcessBackend(ctx, runner, errW, lock)
+	return resolveProcessBackend(ctx, runner, errW, lock, cacheDir)
 }

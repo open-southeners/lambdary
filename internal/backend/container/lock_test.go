@@ -312,7 +312,7 @@ func TestNewWithLockUsableAsBackend(t *testing.T) {
 	// time check exercised at runtime too), exactly like New.
 	var lock fakeLock
 
-	b := NewWithLock("docker", &fakeRunner{}, &lock)
+	b := NewWithLock("docker", &fakeRunner{}, &lock, t.TempDir())
 	if b == nil {
 		t.Fatal("NewWithLock() returned nil")
 	}
