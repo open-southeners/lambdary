@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +24,7 @@ func TestLoadConfig(t *testing.T) {
 				Timeout:       15,
 				Memory:        256,
 				Architectures: []string{"arm64"},
+				Layers:        []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1", "../shared-layer"},
 				Environment:   map[string]string{"STAGE": "local"},
 				URL:           URL{Payload: "1.0"},
 				Local: Local{
@@ -89,6 +91,19 @@ func TestLoadConfig(t *testing.T) {
 			t.Errorf("LoadConfig() error = %v, want wrapping %v", err, ErrInvalidBackend)
 		}
 	})
+
+	t.Run("invalid defaults.layers", func(t *testing.T) {
+		_, err := LoadConfig("testdata/config_invalid_defaults_layers.yml")
+		if err == nil {
+			t.Fatal("LoadConfig() expected error, got nil")
+		}
+		if !errors.Is(err, ErrInvalidLayers) {
+			t.Errorf("LoadConfig() error = %v, want wrapping %v", err, ErrInvalidLayers)
+		}
+		if !strings.Contains(err.Error(), "defaults.") {
+			t.Errorf("LoadConfig() error = %v, want it prefixed with %q", err, "defaults.")
+		}
+	})
 }
 
 func TestConfigApplyDefaults(t *testing.T) {
@@ -99,6 +114,7 @@ func TestConfigApplyDefaults(t *testing.T) {
 			Timeout:       15,
 			Memory:        256,
 			Architectures: []string{"arm64"},
+			Layers:        []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1", "../shared-layer"},
 			Environment:   map[string]string{"STAGE": "local"},
 			URL:           URL{Path: "/default", Payload: "1.0"},
 			Local: Local{
@@ -121,6 +137,7 @@ func TestConfigApplyDefaults(t *testing.T) {
 			Timeout:       15,
 			Memory:        256,
 			Architectures: []string{"arm64"},
+			Layers:        []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1", "../shared-layer"},
 			Environment:   map[string]string{"STAGE": "local"},
 			URL:           URL{Path: "/default", Payload: "1.0"},
 			Local: Local{
@@ -144,6 +161,7 @@ func TestConfigApplyDefaults(t *testing.T) {
 			Timeout:       5,
 			Memory:        128,
 			Architectures: []string{"x86_64"},
+			Layers:        []string{"../own-layer"},
 			Environment:   map[string]string{"OWN": "value"},
 			URL:           URL{Path: "/function_b", Payload: "2.0"},
 			Local: Local{

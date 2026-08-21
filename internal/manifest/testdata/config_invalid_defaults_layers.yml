@@ -1,0 +1,4 @@
+port: 9000
+defaults:
+  layers:
+    - arn:aws:lambda:eu-west-1:534081306603:layer:php-83

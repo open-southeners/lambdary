@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -21,6 +22,7 @@ func TestLoad(t *testing.T) {
 			Timeout:       30,
 			Memory:        512,
 			Architectures: []string{"arm64"},
+			Layers:        []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1", "../shared-layer"},
 			Environment:   map[string]string{"TABLE_NAME": "local-table"},
 			URL:           URL{Path: "/function_a", Payload: "2.0"},
 			Local: Local{
@@ -86,6 +88,9 @@ func TestLoad(t *testing.T) {
 		{"negative timeout", "testdata/invalid_timeout.yml", ErrInvalidTimeout},
 		{"negative memory", "testdata/invalid_memory.yml", ErrInvalidMemory},
 		{"url path without leading slash", "testdata/invalid_url_path.yml", ErrInvalidURLPath},
+		{"more than 5 layers", "testdata/invalid_layers_too_many.yml", ErrInvalidLayers},
+		{"empty layers entry", "testdata/invalid_layers_empty_entry.yml", ErrInvalidLayers},
+		{"versionless layer ARN", "testdata/invalid_layers_arn.yml", ErrInvalidLayers},
 	}
 
 	for _, tc := range validationCases {
@@ -99,6 +104,17 @@ func TestLoad(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("invalid layer ARN error names the offending entry", func(t *testing.T) {
+		_, err := Load("testdata/invalid_layers_arn.yml")
+		if err == nil {
+			t.Fatal("Load() expected error, got nil")
+		}
+		wantEntry := "arn:aws:lambda:eu-west-1:534081306603:layer:php-83"
+		if !strings.Contains(err.Error(), wantEntry) {
+			t.Errorf("Load() error = %v, want it to mention %q", err, wantEntry)
+		}
+	})
 }
 
 func TestManifestApplyBuiltinDefaults(t *testing.T) {

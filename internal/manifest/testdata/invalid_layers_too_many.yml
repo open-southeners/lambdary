@@ -1,0 +1,8 @@
+name: function_a
+layers:
+  - ../layer-one
+  - ../layer-two
+  - ../layer-three
+  - ../layer-four
+  - ../layer-five
+  - ../layer-six
