@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -118,6 +120,25 @@ func TestNeedsContainerFallback(t *testing.T) {
 			false,
 		},
 		{"container kind never needs fallback, even for an unsupported runtime", backendKindContainer, discovery.Function{Runtime: "java21"}, false},
+		{
+			"process kind, provided.* with layers and no local bootstrap needs fallback (plans/layers.md Unit D)",
+			backendKindProcess,
+			discovery.Function{Runtime: "provided.al2023", Dir: t.TempDir(), Manifest: &manifest.Manifest{Layers: []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1"}}},
+			true,
+		},
+		{
+			"process kind, provided.* with layers but a local bootstrap does not need fallback",
+			backendKindProcess,
+			func() discovery.Function {
+				dir := t.TempDir()
+				if err := os.WriteFile(filepath.Join(dir, "bootstrap"), []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+					t.Fatalf("writing bootstrap: %v", err)
+				}
+
+				return discovery.Function{Runtime: "provided.al2023", Dir: dir, Manifest: &manifest.Manifest{Layers: []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1"}}}
+			}(),
+			false,
+		},
 	}
 
 	for _, tt := range tests {

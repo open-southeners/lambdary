@@ -163,12 +163,25 @@ func (r *perFunctionBackend) fallbackToContainer(ctx context.Context, fn discove
 }
 
 // containerFallbackNotice is the stderr message printed the first time a
-// function's runtime turns out to have no process-backend shim and
-// lambdary transparently runs it in a container instead. Shared by
-// perFunctionBackend.fallbackToContainer (dev's per-function resolver) and
-// invokeStandalone (the standalone invoke path, see invoke.go) so both
-// report the fallback identically.
+// function needsContainerFallback and lambdary transparently runs it in a
+// container instead. Shared by perFunctionBackend.fallbackToContainer
+// (dev's per-function resolver) and invokeStandalone (the standalone
+// invoke path, see invoke.go) so both report the fallback identically.
+//
+// Two distinct reasons land here (both surfaced by process.Supports
+// returning false), and they get different wording since "no
+// process-backend shim" is only true for one of them: a runtime family
+// like java21/dotnet8 that Lambdary's process backend has genuinely never
+// implemented a shim for, versus a provided.* function whose layers:
+// supply its bootstrap (plans/layers.md Unit D) — that one *is* a runtime
+// the process backend otherwise understands, just blocked because the
+// bootstrap is Amazon-Linux layer content the host can't exec. See
+// process.RequiresLayerBootstrap.
 func containerFallbackNotice(fn discovery.Function) string {
+	if process.RequiresLayerBootstrap(fn) {
+		return fmt.Sprintf("function %s: runtime %s has no local ./bootstrap and its layers: entries must run on Amazon Linux — running in a container\n", fn.Name, fn.Runtime)
+	}
+
 	return fmt.Sprintf("function %s: runtime %s has no process-backend shim — running in a container\n", fn.Name, fn.Runtime)
 }
 

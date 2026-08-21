@@ -34,6 +34,28 @@
 // plans/m3-process-path.md's Unit B and to leave room for any genuinely
 // short-lived command a future change might add; nothing in this package
 // uses it today.
+//
+// # Fidelity caveats: host OS, and layer content built for Amazon Linux
+//
+// Document loudly, per DESIGN.md's "Process backend" amendment: this
+// package runs the runtime process on the host OS with host libraries —
+// faithful to the Runtime API, not to Amazon Linux. The container backend
+// is the fidelity option.
+//
+// Layers (plans/layers.md Unit D) compound the same caveat rather than
+// escaping it: when a function configures layers:, Start points the
+// runtime's own search-path env vars (NODE_PATH, PYTHONPATH,
+// RUBYLIB/GEM_PATH, PATH — see layerenv.go) at the staged layer content
+// instead of AWS's /opt, so pure-code layers (a shared JS/Python module, a
+// vendored gem) resolve exactly like they would on real Lambda. But layer
+// content *compiled* for Amazon Linux — a native .so a Python package
+// links against, Bref's own `php` binary — will not run on the host no
+// matter where the search paths point; only the container backend, which
+// actually runs Amazon Linux, has that fidelity. A provided.* function
+// whose bootstrap itself comes from a layer is a hard case of this: see
+// runtime.go's RequiresLayerBootstrap, which routes it to the container
+// backend automatically instead of letting the process backend try and
+// fail to exec Linux-built layer content.
 package process
 
 import (
@@ -45,6 +67,8 @@ import (
 
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/layers"
+	"github.com/open-southeners/lambdary/internal/manifest"
 )
 
 // defaultReadyTimeout is how long Start waits for a freshly spawned
@@ -68,10 +92,10 @@ type processBackend struct {
 	home         string
 	readyTimeout time.Duration
 
-	// cacheDir is the project's `.lambdary` directory, used by layer
-	// staging (plans/layers.md's Unit D: Start's env assembly will point
-	// the runtime's search-path env vars at
-	// `<cacheDir>/staging/<fn>/`). Currently held, not yet read.
+	// cacheDir is the project's `.lambdary` directory, passed to
+	// layers.Stage so Start's env assembly can point the runtime's
+	// search-path env vars at `<cacheDir>/staging/<fn>/` — see layerenv.go
+	// and plans/layers.md's Unit D.
 	cacheDir string
 }
 
@@ -87,7 +111,8 @@ func New(riePath string, runner backend.Runner, cacheDir string) backend.Backend
 }
 
 // Start writes Lambdary's embedded shims to $LAMBDARY_HOME/shims (once,
-// idempotently), allocates two distinct ephemeral ports, resolves the
+// idempotently), stages fn's layers: entries (if any) into a per-function
+// staging directory, allocates two distinct ephemeral ports, resolves the
 // runtime command per runtimeCommand's resolution order, spawns the RIE
 // with both address flags and that command as trailing args, and blocks
 // until the invoke port answers before returning — per backend.Backend.
@@ -124,6 +149,16 @@ func (b *processBackend) Start(ctx context.Context, fn discovery.Function) (back
 		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
 	}
 
+	layerRefs, err := parseFunctionLayerRefs(fn)
+	if err != nil {
+		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
+	}
+
+	staging, err := layers.Stage(fn.Name, layerRefs, absDir, b.cacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
+	}
+
 	invokePort, rapiPort, err := allocatePorts()
 	if err != nil {
 		return nil, fmt.Errorf("process: %s: allocating ports: %w", fn.Name, err)
@@ -131,6 +166,10 @@ func (b *processBackend) Start(ctx context.Context, fn discovery.Function) (back
 
 	argv := rieArgs(invokePort, rapiPort, runtimeName, runtimeArgs)
 	env := append(os.Environ(), manifestEnv(fn, fileEnv)...)
+
+	if staging != "" {
+		env = layerSearchPathEnv(env, fn, staging)
+	}
 
 	proc, err := spawn(b.riePath, argv, absDir, env)
 	if err != nil {
@@ -189,6 +228,36 @@ func loadEnvFile(fn discovery.Function, absDir string) (map[string]string, error
 	}
 
 	return env, nil
+}
+
+// parseFunctionLayerRefs parses fn.Manifest.Layers (already validated at
+// manifest load time — see internal/manifest's ErrInvalidLayers) into the
+// []manifest.LayerRef layers.Stage consumes. A nil manifest or an empty
+// Layers list returns a nil slice, so Stage's own len(refs) == 0 check
+// short-circuits and returns "" without touching the filesystem: functions
+// without a `layers:` key pay no staging cost at all, matching
+// internal/layers' own package doc. A parse failure here would mean the
+// manifest was loaded without going through validation (or was mutated
+// after); it is still reported as a Start error naming the bad entry rather
+// than panicking.
+func parseFunctionLayerRefs(fn discovery.Function) ([]manifest.LayerRef, error) {
+	m := fn.Manifest
+	if m == nil || len(m.Layers) == 0 {
+		return nil, nil
+	}
+
+	refs := make([]manifest.LayerRef, 0, len(m.Layers))
+
+	for _, raw := range m.Layers {
+		ref, err := manifest.ParseLayerRef(raw)
+		if err != nil {
+			return nil, fmt.Errorf("layer %q: %w", raw, err)
+		}
+
+		refs = append(refs, ref)
+	}
+
+	return refs, nil
 }
 
 // defaultHome resolves $LAMBDARY_HOME, the shared root for Lambdary's local

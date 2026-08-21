@@ -315,6 +315,113 @@ func TestProcessBackendStart(t *testing.T) {
 
 		t.Errorf("Start() error = %v, want it to include the recent output tail after %d attempts", err, maxAttempts)
 	})
+
+	t.Run("layers: a cache-miss ARN fails Start with context, before ever spawning", func(t *testing.T) {
+		b := &processBackend{riePath: "/should-not-be-invoked", home: t.TempDir(), cacheDir: t.TempDir()}
+		fn := discovery.Function{
+			Name:    "hello",
+			Dir:     t.TempDir(),
+			Runtime: "nodejs22.x",
+			Handler: "index.handler",
+			Manifest: &manifest.Manifest{
+				Layers: []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1"},
+			},
+		}
+
+		_, err := b.Start(context.Background(), fn)
+		if err == nil {
+			t.Fatal("Start() expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "hello") {
+			t.Errorf("Start() error = %v, want it to name the function", err)
+		}
+		if !strings.Contains(err.Error(), "php-83") {
+			t.Errorf("Start() error = %v, want it to name the uncached layer ARN", err)
+		}
+	})
+
+	t.Run("layers: an invalid layers: entry fails Start naming the entry", func(t *testing.T) {
+		b := &processBackend{riePath: "/should-not-be-invoked", home: t.TempDir(), cacheDir: t.TempDir()}
+		fn := discovery.Function{
+			Name:    "hello",
+			Dir:     t.TempDir(),
+			Runtime: "nodejs22.x",
+			Handler: "index.handler",
+			Manifest: &manifest.Manifest{
+				Layers: []string{"arn:aws:lambda:eu-west-1:not-an-arn"},
+			},
+		}
+
+		_, err := b.Start(context.Background(), fn)
+		if err == nil {
+			t.Fatal("Start() expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "arn:aws:lambda:eu-west-1:not-an-arn") {
+			t.Errorf("Start() error = %v, want it to name the bad layer entry", err)
+		}
+	})
+}
+
+func TestParseFunctionLayerRefs(t *testing.T) {
+	t.Run("no manifest returns nil, no error", func(t *testing.T) {
+		refs, err := parseFunctionLayerRefs(discovery.Function{Name: "hello"})
+		if err != nil {
+			t.Fatalf("parseFunctionLayerRefs() unexpected error: %v", err)
+		}
+		if refs != nil {
+			t.Errorf("parseFunctionLayerRefs() = %v, want nil", refs)
+		}
+	})
+
+	t.Run("no layers configured returns nil, no error", func(t *testing.T) {
+		fn := discovery.Function{Name: "hello", Manifest: &manifest.Manifest{}}
+
+		refs, err := parseFunctionLayerRefs(fn)
+		if err != nil {
+			t.Fatalf("parseFunctionLayerRefs() unexpected error: %v", err)
+		}
+		if refs != nil {
+			t.Errorf("parseFunctionLayerRefs() = %v, want nil", refs)
+		}
+	})
+
+	t.Run("a mix of an ARN and a local path parses both, in order", func(t *testing.T) {
+		fn := discovery.Function{
+			Name: "hello",
+			Manifest: &manifest.Manifest{
+				Layers: []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1", "../shared-layer"},
+			},
+		}
+
+		refs, err := parseFunctionLayerRefs(fn)
+		if err != nil {
+			t.Fatalf("parseFunctionLayerRefs() unexpected error: %v", err)
+		}
+		if len(refs) != 2 {
+			t.Fatalf("parseFunctionLayerRefs() = %v, want 2 refs", refs)
+		}
+		if refs[0].Kind != manifest.LayerRefKindARN {
+			t.Errorf("refs[0].Kind = %q, want %q", refs[0].Kind, manifest.LayerRefKindARN)
+		}
+		if refs[1].Kind != manifest.LayerRefKindPath {
+			t.Errorf("refs[1].Kind = %q, want %q", refs[1].Kind, manifest.LayerRefKindPath)
+		}
+	})
+
+	t.Run("an invalid entry errors naming it", func(t *testing.T) {
+		fn := discovery.Function{
+			Name:     "hello",
+			Manifest: &manifest.Manifest{Layers: []string{"arn:aws:lambda:eu-west-1:not-an-arn"}},
+		}
+
+		_, err := parseFunctionLayerRefs(fn)
+		if err == nil {
+			t.Fatal("parseFunctionLayerRefs() expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "arn:aws:lambda:eu-west-1:not-an-arn") {
+			t.Errorf("parseFunctionLayerRefs() error = %v, want it to name the bad entry", err)
+		}
+	})
 }
 
 func TestLoadEnvFile(t *testing.T) {
