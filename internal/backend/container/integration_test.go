@@ -165,6 +165,121 @@ func waitForNoLabeledContainers(t *testing.T, runner backend.ExecRunner, fnName 
 	t.Errorf("docker ps after Stop() = %q, want no containers left for label lambdary.function=%s", last, fnName)
 }
 
+// TestContainerBackendIntegrationLayers exercises the real docker CLI end
+// to end for plans/layers.md's Unit C: start a python3.13 hello function
+// from testdata/python-layers-hello whose local `layers:` entry supplies a
+// `python/greeting.py` module under `/opt/python` (AWS's own
+// python-runtime search path, needing no extra env wiring on the container
+// backend), invoke it, and assert the handler's import of that module
+// actually resolved a value from the layer rather than failing at import
+// time. Gated the same way as TestContainerBackendIntegration.
+func TestContainerBackendIntegrationLayers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped: -short")
+	}
+
+	var runner backend.ExecRunner
+
+	if _, err := runner.Run(context.Background(), "docker", "info"); err != nil {
+		t.Skipf("integration test skipped: docker daemon unreachable: %v", err)
+	}
+
+	dir, err := filepath.Abs("testdata/python-layers-hello")
+	if err != nil {
+		t.Fatalf("filepath.Abs() unexpected error: %v", err)
+	}
+
+	fn := discovery.Function{
+		Name:    "lambdary-container-it-python-layers-hello",
+		Dir:     dir,
+		Runtime: "python3.13",
+		Handler: "lambda_function.handler",
+		Backend: "container",
+		Manifest: &manifest.Manifest{
+			Timeout: 30,
+			// Relative to dir, per manifest.ParseLayerRef/internal/layers'
+			// local-path resolution — resolves to testdata/
+			// python-layers-hello/layer.
+			Layers: []string{"layer"},
+		},
+	}
+
+	// b.cacheDir is a private per-test directory so this test never shares
+	// staging state with another run, same reasoning as
+	// TestContainerBackendIntegration's readyTimeout comment about the
+	// first pull taking a while.
+	b := &containerBackend{cli: "docker", runner: runner, readyTimeout: 120 * time.Second, cacheDir: t.TempDir()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	defer cancel()
+
+	inst, err := b.Start(ctx, fn)
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+
+	stopped := false
+	t.Cleanup(func() {
+		if stopped {
+			return
+		}
+
+		stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := inst.Stop(stopCtx); err != nil {
+			t.Errorf("cleanup Stop() unexpected error: %v", err)
+		}
+	})
+
+	event, err := json.Marshal(map[string]string{"ping": "pong"})
+	if err != nil {
+		t.Fatalf("json.Marshal() unexpected error: %v", err)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	resp, err := client.Post(inst.InvokeURL(), "application/json", bytes.NewReader(event))
+	if err != nil {
+		t.Fatalf("POST %s unexpected error: %v", inst.InvokeURL(), err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading response body unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s status = %d, body = %s", inst.InvokeURL(), resp.StatusCode, body)
+	}
+
+	var result struct {
+		Echo     map[string]string `json:"echo"`
+		Greeting string            `json:"greeting"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("unmarshalling response body %q: %v", body, err)
+	}
+
+	if result.Echo["ping"] != "pong" {
+		t.Errorf("response echo = %v, want {\"ping\": \"pong\"}", result.Echo)
+	}
+	if want := "hello from layer"; result.Greeting != want {
+		t.Errorf("response greeting = %q, want %q (the handler's import from the layer at /opt/python)", result.Greeting, want)
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := inst.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop() unexpected error: %v", err)
+	}
+	stopped = true
+
+	waitForNoLabeledContainers(t, runner, fn.Name)
+}
+
 // TestContainerBackendIntegrationDockerfileFunction exercises the real
 // docker CLI for a Dockerfile-marker function end to end: build + start
 // from testdata/dockerfile-echo, invoke, stop, no leftover containers —

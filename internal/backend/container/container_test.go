@@ -143,6 +143,127 @@ func TestContainerBackendStart(t *testing.T) {
 		}
 	})
 
+	t.Run("provided.* runtime with no local bootstrap but a layer providing one needs no local bootstrap file", func(t *testing.T) {
+		layerDir := t.TempDir()
+		writeFile(t, filepath.Join(layerDir, "bootstrap"), "#!/bin/sh\n")
+
+		cacheDir := t.TempDir()
+
+		r := &fakeRunner{respond: map[string]func(args []string) (string, error){
+			"run":  func(args []string) (string, error) { return "container123\n", nil },
+			"port": func(args []string) (string, error) { return "127.0.0.1:" + listenLoopback(t) + "\n", nil },
+			"stop": func(args []string) (string, error) { return "", nil },
+		}}
+
+		b := &containerBackend{cli: "docker", runner: r, readyTimeout: 2 * time.Second, cacheDir: cacheDir}
+
+		fn := discovery.Function{
+			Name:    "custom-runtime",
+			Dir:     t.TempDir(),
+			Runtime: "provided.al2023",
+			Manifest: &manifest.Manifest{
+				Layers: []string{layerDir},
+			},
+		}
+
+		inst, err := b.Start(context.Background(), fn)
+		if err != nil {
+			t.Fatalf("Start() unexpected error: %v", err)
+		}
+		defer inst.Stop(context.Background())
+
+		runCalls := r.callsFor("run")
+		if len(runCalls) != 1 {
+			t.Fatalf("run calls = %d, want 1", len(runCalls))
+		}
+		argv := strings.Join(runCalls[0], " ")
+
+		staged := filepath.Join(cacheDir, "staging", "custom-runtime")
+		if wantOpt := "-v " + staged + ":/opt:ro"; !strings.Contains(argv, wantOpt) {
+			t.Errorf("run argv = %v, want it to contain %q", runCalls[0], wantOpt)
+		}
+		if wantBootstrap := "-v " + filepath.Join(staged, "bootstrap") + ":/var/runtime/bootstrap:ro"; !strings.Contains(argv, wantBootstrap) {
+			t.Errorf("run argv = %v, want it to contain %q (layer-provided bootstrap)", runCalls[0], wantBootstrap)
+		}
+	})
+
+	t.Run("provided.* runtime with both a local bootstrap and a layer-provided one: local wins", func(t *testing.T) {
+		fnDir := t.TempDir()
+		writeFile(t, filepath.Join(fnDir, "bootstrap"), "#!/bin/sh\n# local\n")
+
+		layerDir := t.TempDir()
+		writeFile(t, filepath.Join(layerDir, "bootstrap"), "#!/bin/sh\n# layer\n")
+
+		cacheDir := t.TempDir()
+
+		r := &fakeRunner{respond: map[string]func(args []string) (string, error){
+			"run":  func(args []string) (string, error) { return "container123\n", nil },
+			"port": func(args []string) (string, error) { return "127.0.0.1:" + listenLoopback(t) + "\n", nil },
+			"stop": func(args []string) (string, error) { return "", nil },
+		}}
+
+		b := &containerBackend{cli: "docker", runner: r, readyTimeout: 2 * time.Second, cacheDir: cacheDir}
+
+		fn := discovery.Function{
+			Name:    "custom-runtime",
+			Dir:     fnDir,
+			Runtime: "provided.al2023",
+			Manifest: &manifest.Manifest{
+				Layers: []string{layerDir},
+			},
+		}
+
+		inst, err := b.Start(context.Background(), fn)
+		if err != nil {
+			t.Fatalf("Start() unexpected error: %v", err)
+		}
+		defer inst.Stop(context.Background())
+
+		runCalls := r.callsFor("run")
+		if len(runCalls) != 1 {
+			t.Fatalf("run calls = %d, want 1", len(runCalls))
+		}
+		argv := strings.Join(runCalls[0], " ")
+
+		wantBootstrap := "-v " + filepath.Join(fnDir, "bootstrap") + ":/var/runtime/bootstrap:ro"
+		if !strings.Contains(argv, wantBootstrap) {
+			t.Errorf("run argv = %v, want it to contain %q (local bootstrap wins over the layer's)", runCalls[0], wantBootstrap)
+		}
+
+		staged := filepath.Join(cacheDir, "staging", "custom-runtime", "bootstrap")
+		if unwanted := "-v " + staged + ":/var/runtime/bootstrap:ro"; strings.Contains(argv, unwanted) {
+			t.Errorf("run argv = %v, must not mount the layer's bootstrap when a local one exists", runCalls[0])
+		}
+	})
+
+	t.Run("provided.* runtime with layers but no bootstrap in the function dir or any layer errors without running anything", func(t *testing.T) {
+		layerDir := t.TempDir()
+		writeFile(t, filepath.Join(layerDir, "not-bootstrap.txt"), "not a bootstrap file\n")
+
+		r := &fakeRunner{}
+		b := &containerBackend{cli: "docker", runner: r, cacheDir: t.TempDir()}
+
+		fn := discovery.Function{
+			Name:    "custom-runtime",
+			Dir:     t.TempDir(),
+			Runtime: "provided.al2023",
+			Manifest: &manifest.Manifest{
+				Layers: []string{layerDir},
+			},
+		}
+
+		_, err := b.Start(context.Background(), fn)
+		if err == nil {
+			t.Fatal("Start() expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "bootstrap") {
+			t.Errorf("Start() error = %v, want it to mention bootstrap", err)
+		}
+		if calls := r.callsFor("run"); len(calls) != 0 {
+			t.Errorf("run calls = %d, want 0 (Start must not run a container for a missing bootstrap)", len(calls))
+		}
+	})
+
 	t.Run("Dockerfile-marker function with no actual Dockerfile errors without running anything", func(t *testing.T) {
 		r := &fakeRunner{}
 		b := &containerBackend{cli: "docker", runner: r}
@@ -257,6 +378,90 @@ func TestContainerBackendStart(t *testing.T) {
 		}
 		if !strings.Contains(argv, "-e BAR=file-only") {
 			t.Errorf("run argv = %v, want BAR=file-only from env_file", runCalls[0])
+		}
+	})
+
+	t.Run("layers: entries are staged and mounted at /opt, real files on disk", func(t *testing.T) {
+		fnDir := t.TempDir()
+		layerDir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(layerDir, "python"), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll() unexpected error: %v", err)
+		}
+		writeFile(t, filepath.Join(layerDir, "python", "helper.py"), "value = 1\n")
+
+		cacheDir := t.TempDir()
+
+		r := &fakeRunner{respond: map[string]func(args []string) (string, error){
+			"run":  func(args []string) (string, error) { return "container123\n", nil },
+			"port": func(args []string) (string, error) { return "127.0.0.1:" + listenLoopback(t) + "\n", nil },
+			"stop": func(args []string) (string, error) { return "", nil },
+		}}
+
+		b := &containerBackend{cli: "docker", runner: r, readyTimeout: 2 * time.Second, cacheDir: cacheDir}
+
+		fn := discovery.Function{
+			Name:    "hello",
+			Dir:     fnDir,
+			Runtime: "python3.13",
+			Handler: "lambda_function.handler",
+			Manifest: &manifest.Manifest{
+				Layers: []string{layerDir},
+			},
+		}
+
+		inst, err := b.Start(context.Background(), fn)
+		if err != nil {
+			t.Fatalf("Start() unexpected error: %v", err)
+		}
+		defer inst.Stop(context.Background())
+
+		// The proof Stage actually ran, not just that argv mentions a
+		// path: the staged file exists on disk with the layer's content,
+		// copied by layers.Stage (see internal/layers).
+		staged := filepath.Join(cacheDir, "staging", "hello", "python", "helper.py")
+		got, err := os.ReadFile(staged)
+		if err != nil {
+			t.Fatalf("reading staged file %s: %v", staged, err)
+		}
+		if string(got) != "value = 1\n" {
+			t.Errorf("staged file content = %q, want %q", got, "value = 1\n")
+		}
+
+		runCalls := r.callsFor("run")
+		if len(runCalls) != 1 {
+			t.Fatalf("run calls = %d, want 1", len(runCalls))
+		}
+		argv := strings.Join(runCalls[0], " ")
+		wantMount := "-v " + filepath.Join(cacheDir, "staging", "hello") + ":/opt:ro"
+		if !strings.Contains(argv, wantMount) {
+			t.Errorf("run argv = %v, want it to contain %q", runCalls[0], wantMount)
+		}
+	})
+
+	t.Run("invalid layers: entry fails Start with context, without running anything", func(t *testing.T) {
+		r := &fakeRunner{}
+		b := &containerBackend{cli: "docker", runner: r, cacheDir: t.TempDir()}
+
+		fn := discovery.Function{
+			Name:    "hello",
+			Dir:     t.TempDir(),
+			Runtime: "python3.13",
+			Handler: "lambda_function.handler",
+			Manifest: &manifest.Manifest{
+				// A truncated ARN (no version) is invalid per
+				// manifest.ParseLayerRef; the manifest loader already
+				// rejects this, but stageLayers must surface a
+				// ParseLayerRef error too, not panic or silently drop it.
+				Layers: []string{"arn:aws:lambda:eu-west-1:123456789012:layer:broken"},
+			},
+		}
+
+		_, err := b.Start(context.Background(), fn)
+		if err == nil {
+			t.Fatal("Start() expected error, got nil")
+		}
+		if calls := r.callsFor("run"); len(calls) != 0 {
+			t.Errorf("run calls = %d, want 0 (Start must not run a container for an invalid layers: entry)", len(calls))
 		}
 	})
 

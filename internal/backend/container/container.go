@@ -26,6 +26,8 @@ import (
 
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/layers"
+	"github.com/open-southeners/lambdary/internal/manifest"
 )
 
 // defaultReadyTimeout is how long Start waits for a freshly started
@@ -47,9 +49,11 @@ type containerBackend struct {
 	readyTimeout time.Duration
 	lock         Lock
 
-	// cacheDir is the project's `.lambdary` directory, used by layer
-	// staging (plans/layers.md's Unit C: `runArgs` will bind-mount
-	// `<cacheDir>/staging/<fn>/` to `/opt`). Currently held, not yet read.
+	// cacheDir is the project's `.lambdary` directory. Start uses it to
+	// stage each function's `layers:` entries via layers.Stage into
+	// `<cacheDir>/staging/<fn>/`, which runArgs then bind-mounts to `/opt`
+	// (and, for provided.* functions, may also search for a bootstrap file
+	// in) — see stageLayers and plans/layers.md's Unit C.
 	cacheDir string
 }
 
@@ -78,6 +82,18 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 	}
 
 	fileEnv, err := loadEnvFile(fn, absDir)
+	if err != nil {
+		return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
+	}
+
+	// Layer staging (plans/layers.md's Unit C) happens before the
+	// Dockerfile/image branches below and applies to all of them uniformly
+	// — a default runtime image, a local.image override, or a
+	// Dockerfile-built image all get the same /opt mount, exactly like
+	// environment variables are applied regardless of image source. Staged
+	// fresh on every Start (see internal/layers' package doc), so a
+	// restart picks up edits to a local layer directory.
+	staging, err := stageLayers(fn, absDir, b.cacheDir)
 	if err != nil {
 		return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
 	}
@@ -124,20 +140,40 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 		}
 	}
 
-	// runArgs bind-mounts <absDir>/bootstrap to /var/runtime/bootstrap for a
-	// provided.* function (see argv.go), and Docker/Podman silently create a
-	// missing bind-mount *source* as an empty directory rather than erroring
-	// — which would leave the container's RUNTIME_ENTRYPOINT pointing at a
+	// runArgs bind-mounts a resolved bootstrapSrc to /var/runtime/bootstrap
+	// for a provided.* function (see argv.go), following real Lambda's own
+	// search order: <absDir>/bootstrap first (today's behavior, `/var/task`
+	// wins), then a bootstrap supplied by a layer — the Bref parity win, so
+	// a composer.json/`layers:` function needs no local bootstrap file at
+	// all (plans/layers.md Unit C). Docker/Podman silently create a missing
+	// bind-mount *source* as an empty directory rather than erroring — which
+	// would leave the container's RUNTIME_ENTRYPOINT pointing at a
 	// directory instead of a bootstrap file and fail in a confusing way deep
-	// inside the container. Catch the missing file here instead, with a
-	// message that names the actual fix.
+	// inside the container. Catch that here instead, with a message that
+	// names the actual fix, only once neither source has one — a function
+	// with no `layers:` configured (staging == "") behaves exactly as
+	// before this search order existed.
+	bootstrapSrc := filepath.Join(absDir, "bootstrap")
+
 	if strings.HasPrefix(fn.Runtime, "provided.") {
-		if _, err := os.Stat(filepath.Join(absDir, "bootstrap")); err != nil {
-			return nil, fmt.Errorf("container: %s: provided.* runtime needs a bootstrap file in the function directory (or a function-owned Dockerfile): %w", fn.Name, err)
+		if _, err := os.Stat(bootstrapSrc); err != nil {
+			layerBootstrap := ""
+
+			if staging != "" {
+				if candidate := filepath.Join(staging, "bootstrap"); fileExists(candidate) {
+					layerBootstrap = candidate
+				}
+			}
+
+			if layerBootstrap == "" {
+				return nil, fmt.Errorf("container: %s: provided.* runtime needs a bootstrap file in the function directory, a layer, or a function-owned Dockerfile: %w", fn.Name, err)
+			}
+
+			bootstrapSrc = layerBootstrap
 		}
 	}
 
-	args := runArgs(fn, runImage, absDir, fileEnv)
+	args := runArgs(fn, runImage, absDir, fileEnv, staging, bootstrapSrc)
 
 	out, err := b.runner.Run(ctx, b.cli, args...)
 	if err != nil {
@@ -219,6 +255,44 @@ func loadEnvFile(fn discovery.Function, absDir string) (map[string]string, error
 	}
 
 	return env, nil
+}
+
+// stageLayers parses fn.Manifest.Layers (already validated at manifest-load
+// time — see manifest.Load) into layers.Stage's ref type and
+// rebuilds fn's layer staging directory, returning its path. It returns
+// ("", nil) when fn has no `layers:` entries at all, per layers.Stage's own
+// contract, so Start can skip all layer wiring for the common case
+// unchanged. A ParseLayerRef error here would mean the validation this
+// depends on regressed, so it is surfaced as a Start error rather than
+// swallowed, same as any other Start-time failure.
+func stageLayers(fn discovery.Function, absDir, cacheDir string) (string, error) {
+	m := fn.Manifest
+	if m == nil || len(m.Layers) == 0 {
+		return "", nil
+	}
+
+	refs := make([]manifest.LayerRef, 0, len(m.Layers))
+
+	for _, raw := range m.Layers {
+		ref, err := manifest.ParseLayerRef(raw)
+		if err != nil {
+			return "", fmt.Errorf("layer %q: %w", raw, err)
+		}
+
+		refs = append(refs, ref)
+	}
+
+	return layers.Stage(fn.Name, refs, absDir, cacheDir)
+}
+
+// fileExists reports whether path exists, per os.Stat. Errors other than
+// "does not exist" (e.g. a permissions problem) are treated the same as
+// non-existence here: the callers using this are picking between fallback
+// bootstrap sources, not surfacing filesystem errors.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+
+	return err == nil
 }
 
 // lastLine returns the last non-blank line of s, trimmed. `docker run -d`

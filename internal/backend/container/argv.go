@@ -20,13 +20,24 @@ var archPlatforms = map[string]string{
 
 // runArgs builds the full `<cli> run ...` argv for starting fn as a
 // container from image, with fnDir (an absolute path) bind-mounted at
-// /var/task, per plans/m1-container-path.md Unit B's exact flag order.
-// fileEnv is the (already-loaded) content of the function's local.env_file,
-// or nil when it has none — see envMerge for the precedence between it and
-// the manifest's own environment block. It is a pure function — no I/O, no
-// CLI invocation — so tests can assert the built argv directly against a
-// fake runner's recorded calls.
-func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]string) []string {
+// /var/task, per plans/m1-container-path.md Unit B's exact flag order —
+// extended by plans/layers.md's Unit C, which inserts an `/opt` mount right
+// after `/var/task` and repoints the provided.* bootstrap mount at a
+// resolved source instead of always fnDir's own. fileEnv is the
+// (already-loaded) content of the function's local.env_file, or nil when it
+// has none — see envMerge for the precedence between it and the manifest's
+// own environment block. staging is fn's layer staging directory
+// (layers.Stage's return value) or "" when fn has no `layers:` entries — in
+// which case the `/opt` mount is skipped entirely, keeping the argv
+// byte-identical to before layers existed. bootstrapSrc is the bind-mount
+// source Start resolved for a provided.* runtime's
+// `/var/runtime/bootstrap` (see Start's comment for the search order); it
+// is ignored for non-provided runtimes. runArgs is a pure function — no
+// I/O, no CLI invocation, no stat calls of its own — so tests can assert
+// the built argv directly against a fake runner's recorded calls; every
+// filesystem decision (staging, bootstrap resolution) is made by the
+// caller, in Start.
+func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]string, staging, bootstrapSrc string) []string {
 	m := fn.Manifest
 	if m == nil {
 		m = &manifest.Manifest{}
@@ -42,16 +53,34 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 		"-v", fnDir + ":/var/task:ro",
 	}
 
+	// staging (fn's merged layer content, "" when fn has none) is mounted
+	// read-only at /opt, right after /var/task — the same location and
+	// precedence AWS's own base images use for layer content, per
+	// plans/layers.md's Unit C.
+	if staging != "" {
+		args = append(args, "-v", staging+":/opt:ro")
+	}
+
 	// AWS's provided.* base images hardcode RUNTIME_ENTRYPOINT to
 	// /var/runtime/bootstrap, which is empty in the base image itself — so
-	// without this second mount the entrypoint has nothing to exec. This
+	// without this mount the entrypoint has nothing to exec. bootstrapSrc is
+	// Start's resolution of real Lambda's own search order: fnDir's own
+	// bootstrap wins when present (matching /var/task's precedence over
+	// /opt); otherwise a bootstrap supplied by a layer, staged at
+	// <staging>/bootstrap — the Bref parity win, so a composer.json/
+	// `layers:` function needs no local bootstrap file at all
+	// (plans/layers.md Unit C); otherwise fnDir's own (missing) bootstrap
+	// path, preserving the pre-layers Docker empty-directory bind-mount
+	// quirk unchanged (Start's own stat guard is what actually keeps
+	// functions from hitting it in practice — see its comment). This
 	// applies even under a local.image override, since a custom
 	// provided-family image mimics the AWS base image's entrypoint.
 	// Dockerfile-marker functions never reach here with fn.Runtime set (see
 	// isDockerfileFunction), so they're unaffected. See
-	// plans/dead-runtime-and-provided-container.md.
+	// plans/dead-runtime-and-provided-container.md and plans/layers.md Unit
+	// C.
 	if provided {
-		args = append(args, "-v", fnDir+"/bootstrap:/var/runtime/bootstrap:ro")
+		args = append(args, "-v", bootstrapSrc+":/var/runtime/bootstrap:ro")
 	}
 
 	env := envMerge(fileEnv, m.Environment)

@@ -25,7 +25,7 @@ func TestRunArgs(t *testing.T) {
 			},
 		}
 
-		got := runArgs(fn, "public.ecr.aws/lambda/python:3.13", "/abs/hello", nil)
+		got := runArgs(fn, "public.ecr.aws/lambda/python:3.13", "/abs/hello", nil, "", "")
 
 		want := []string{
 			"run", "-d", "--rm",
@@ -55,7 +55,7 @@ func TestRunArgs(t *testing.T) {
 			Manifest: &manifest.Manifest{Architectures: []string{"x86_64"}},
 		}
 
-		got := runArgs(fn, "image", "/abs/hello", nil)
+		got := runArgs(fn, "image", "/abs/hello", nil, "", "")
 
 		want := []string{
 			"run", "-d", "--rm",
@@ -79,7 +79,7 @@ func TestRunArgs(t *testing.T) {
 			Manifest: &manifest.Manifest{},
 		}
 
-		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/minimal", nil)
+		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/minimal", nil, "", "")
 
 		want := []string{
 			"run", "-d", "--rm",
@@ -99,7 +99,7 @@ func TestRunArgs(t *testing.T) {
 	t.Run("nil manifest behaves like an empty one", func(t *testing.T) {
 		fn := discovery.Function{Name: "no-manifest"}
 
-		got := runArgs(fn, "image", "/abs/no-manifest", nil)
+		got := runArgs(fn, "image", "/abs/no-manifest", nil, "", "")
 
 		want := []string{
 			"run", "-d", "--rm",
@@ -124,7 +124,7 @@ func TestRunArgs(t *testing.T) {
 			Manifest: &manifest.Manifest{},
 		}
 
-		got := runArgs(fn, "public.ecr.aws/lambda/provided:al2023", "/abs/custom-runtime", nil)
+		got := runArgs(fn, "public.ecr.aws/lambda/provided:al2023", "/abs/custom-runtime", nil, "", "/abs/custom-runtime/bootstrap")
 
 		want := []string{
 			"run", "-d", "--rm",
@@ -133,6 +133,89 @@ func TestRunArgs(t *testing.T) {
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/custom-runtime:/var/task:ro",
 			"-v", "/abs/custom-runtime/bootstrap:/var/runtime/bootstrap:ro",
+			"-e", "AWS_LAMBDA_FUNCTION_NAME=custom-runtime",
+			"public.ecr.aws/lambda/provided:al2023",
+			"bootstrap",
+		}
+
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("runArgs() =\n%v\nwant\n%v", got, want)
+		}
+	})
+
+	t.Run("layers: staging mount appears right after /var/task", func(t *testing.T) {
+		fn := discovery.Function{
+			Name:     "hello",
+			Dir:      "/root/hello",
+			Handler:  "index.handler",
+			Runtime:  "nodejs22.x",
+			Manifest: &manifest.Manifest{},
+		}
+
+		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/hello", nil, "/cache/staging/hello", "")
+
+		want := []string{
+			"run", "-d", "--rm",
+			"--label", "lambdary=1",
+			"--label", "lambdary.function=hello",
+			"-p", "127.0.0.1:0:8080",
+			"-v", "/abs/hello:/var/task:ro",
+			"-v", "/cache/staging/hello:/opt:ro",
+			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"public.ecr.aws/lambda/nodejs:22",
+			"index.handler",
+		}
+
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("runArgs() =\n%v\nwant\n%v", got, want)
+		}
+	})
+
+	t.Run("no layers: staging empty means no /opt mount, argv unchanged from before layers existed", func(t *testing.T) {
+		fn := discovery.Function{
+			Name:     "hello",
+			Dir:      "/root/hello",
+			Handler:  "index.handler",
+			Runtime:  "nodejs22.x",
+			Manifest: &manifest.Manifest{},
+		}
+
+		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/hello", nil, "", "")
+
+		want := []string{
+			"run", "-d", "--rm",
+			"--label", "lambdary=1",
+			"--label", "lambdary.function=hello",
+			"-p", "127.0.0.1:0:8080",
+			"-v", "/abs/hello:/var/task:ro",
+			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"public.ecr.aws/lambda/nodejs:22",
+			"index.handler",
+		}
+
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("runArgs() =\n%v\nwant\n%v", got, want)
+		}
+	})
+
+	t.Run("provided.* with layers: staging mount and layer-resolved bootstrapSrc both present", func(t *testing.T) {
+		fn := discovery.Function{
+			Name:     "custom-runtime",
+			Dir:      "/root/custom-runtime",
+			Runtime:  "provided.al2023",
+			Manifest: &manifest.Manifest{Layers: []string{"./local-layer"}},
+		}
+
+		got := runArgs(fn, "public.ecr.aws/lambda/provided:al2023", "/abs/custom-runtime", nil, "/cache/staging/custom-runtime", "/cache/staging/custom-runtime/bootstrap")
+
+		want := []string{
+			"run", "-d", "--rm",
+			"--label", "lambdary=1",
+			"--label", "lambdary.function=custom-runtime",
+			"-p", "127.0.0.1:0:8080",
+			"-v", "/abs/custom-runtime:/var/task:ro",
+			"-v", "/cache/staging/custom-runtime:/opt:ro",
+			"-v", "/cache/staging/custom-runtime/bootstrap:/var/runtime/bootstrap:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=custom-runtime",
 			"public.ecr.aws/lambda/provided:al2023",
 			"bootstrap",
@@ -152,7 +235,7 @@ func TestRunArgs(t *testing.T) {
 			Manifest: &manifest.Manifest{},
 		}
 
-		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/hello", nil)
+		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/hello", nil, "", "")
 
 		want := []string{
 			"run", "-d", "--rm",
@@ -180,7 +263,7 @@ func TestRunArgs(t *testing.T) {
 
 		fileEnv := map[string]string{"API_KEY": "from-file", "EXTRA": "from-file-only"}
 
-		got := runArgs(fn, "image", "/abs/hello", fileEnv)
+		got := runArgs(fn, "image", "/abs/hello", fileEnv, "", "")
 
 		want := []string{
 			"run", "-d", "--rm",
