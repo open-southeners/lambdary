@@ -45,6 +45,9 @@ type Defaults struct {
 	Memory int `yaml:"memory,omitempty"`
 	// Architectures lists target CPU architectures.
 	Architectures []string `yaml:"architectures,omitempty"`
+	// Layers lists layer version ARNs and/or local paths inherited by
+	// functions that don't set their own.
+	Layers []string `yaml:"layers,omitempty"`
 	// Environment holds environment variables merged into functions
 	// that don't set their own.
 	Environment map[string]string `yaml:"environment,omitempty"`
@@ -85,7 +88,7 @@ func (c *Config) validate(path string) error {
 		return fmt.Errorf("config: %s: %w: got %d", path, ErrInvalidPort, c.Port)
 	}
 
-	if err := validateCommon(c.Defaults.Timeout, c.Defaults.Memory, c.Defaults.URL, c.Defaults.Local); err != nil {
+	if err := validateCommon(c.Defaults.Timeout, c.Defaults.Memory, c.Defaults.URL, c.Defaults.Local, c.Defaults.Layers); err != nil {
 		return fmt.Errorf("config: %s: defaults.%w", path, err)
 	}
 
@@ -115,6 +118,9 @@ func (c *Config) ApplyDefaults(m *Manifest) {
 	}
 	if len(m.Architectures) == 0 {
 		m.Architectures = d.Architectures
+	}
+	if len(m.Layers) == 0 {
+		m.Layers = d.Layers
 	}
 	if len(m.Environment) == 0 {
 		m.Environment = d.Environment

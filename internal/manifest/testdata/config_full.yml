@@ -6,6 +6,9 @@ defaults:
   timeout: 15
   memory: 256
   architectures: [arm64]
+  layers:
+    - arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1
+    - ../shared-layer
   environment:
     STAGE: local
   url:

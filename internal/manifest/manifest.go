@@ -67,6 +67,13 @@ type Manifest struct {
 	// Architectures lists target CPU architectures (e.g. "arm64").
 	// Defaults to the host architecture when unset.
 	Architectures []string `yaml:"architectures,omitempty"`
+	// Layers lists layer version ARNs and/or local paths (a directory or
+	// a .zip file, relative to the function directory), mirroring AWS
+	// Lambda's own Layers configuration. At most 5 entries; they are
+	// resolved and merged in declared order into the function's /opt,
+	// with later entries winning when the same path appears in more than
+	// one layer. See ParseLayerRef for how each entry is classified.
+	Layers []string `yaml:"layers,omitempty"`
 	// Environment holds environment variables passed to the function.
 	Environment map[string]string `yaml:"environment,omitempty"`
 	// URL configures the local Function URL route for this function.
@@ -110,7 +117,7 @@ func Load(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("manifest: %s: %w", path, err)
 	}
 
-	if err := validateCommon(m.Timeout, m.Memory, m.URL, m.Local); err != nil {
+	if err := validateCommon(m.Timeout, m.Memory, m.URL, m.Local, m.Layers); err != nil {
 		return nil, fmt.Errorf("manifest: %s: %w", path, err)
 	}
 
@@ -149,9 +156,10 @@ func decodeFile(path string, v any) error {
 }
 
 // validateCommon applies the validation rules shared by Manifest and
-// Config's defaults block: local.backend, timeout, memory, and url.path.
-// Callers add file-path and document-kind context to the returned error.
-func validateCommon(timeout, memory int, url URL, local Local) error {
+// Config's defaults block: local.backend, timeout, memory, url.path, and
+// layers. Callers add file-path and document-kind context to the returned
+// error.
+func validateCommon(timeout, memory int, url URL, local Local, layers []string) error {
 	switch local.Backend {
 	case "", "auto", "container", "process":
 	default:
@@ -168,6 +176,10 @@ func validateCommon(timeout, memory int, url URL, local Local) error {
 
 	if url.Path != "" && !strings.HasPrefix(url.Path, "/") {
 		return fmt.Errorf("%w: got %q", ErrInvalidURLPath, url.Path)
+	}
+
+	if err := validateLayers(layers); err != nil {
+		return err
 	}
 
 	return nil
