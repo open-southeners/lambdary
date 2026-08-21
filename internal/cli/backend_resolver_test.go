@@ -205,6 +205,81 @@ func TestPerFunctionBackendResolveFallsBackToContainerForUnsupportedRuntime(t *t
 	}
 }
 
+// TestPerFunctionBackendResolveFallsBackToContainerForLayersBootstrap covers
+// plans/layers.md Unit D's carve-out: a global process backend with a
+// provided.* function that configures layers: and has no local ./bootstrap
+// gets the container backend too, like the unsupported-runtime case above,
+// but with wording that names the real reason (the bootstrap comes from a
+// layer, which needs Amazon Linux) instead of the generic "no
+// process-backend shim" message, which would be misleading here — the
+// process backend does understand provided.* runtimes in general.
+func TestPerFunctionBackendResolveFallsBackToContainerForLayersBootstrap(t *testing.T) {
+	global, containerB, _ := fakeBackends()
+	var errW bytes.Buffer
+
+	r := &perFunctionBackend{
+		mode:       "process",
+		global:     global,
+		globalKind: backendKindProcess,
+		errW:       &errW,
+		resolveContainer: func(context.Context) (backend.Backend, error) {
+			return containerB, nil
+		},
+	}
+
+	fn := discovery.Function{
+		Name:     "bref-fn",
+		Runtime:  "provided.al2023",
+		Dir:      t.TempDir(),
+		Manifest: &manifest.Manifest{Layers: []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1"}},
+	}
+
+	got, err := r.resolve(context.Background(), fn)
+	if err != nil {
+		t.Fatalf("resolve() unexpected error: %v", err)
+	}
+	if got != containerB {
+		t.Errorf("resolve() = %v, want the container backend (fallback)", got)
+	}
+
+	wantNotice := "function bref-fn: runtime provided.al2023 has no local ./bootstrap and its layers: entries must run on Amazon Linux — running in a container\n"
+	if errW.String() != wantNotice {
+		t.Errorf("errW = %q, want %q", errW.String(), wantNotice)
+	}
+}
+
+// TestContainerFallbackNotice covers containerFallbackNotice's wording
+// directly: the generic "no process-backend shim" message for a runtime
+// family with genuinely no shim, versus the layers-specific message for
+// plans/layers.md Unit D's provided.*+layers+no-bootstrap carve-out (see
+// process.RequiresLayerBootstrap).
+func TestContainerFallbackNotice(t *testing.T) {
+	t.Run("runtime with no process-backend shim at all", func(t *testing.T) {
+		fn := discovery.Function{Name: "legacy", Runtime: "java21"}
+
+		got := containerFallbackNotice(fn)
+		want := "function legacy: runtime java21 has no process-backend shim — running in a container\n"
+		if got != want {
+			t.Errorf("containerFallbackNotice() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("provided.* with layers and no local bootstrap", func(t *testing.T) {
+		fn := discovery.Function{
+			Name:     "bref-fn",
+			Runtime:  "provided.al2023",
+			Dir:      t.TempDir(),
+			Manifest: &manifest.Manifest{Layers: []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1"}},
+		}
+
+		got := containerFallbackNotice(fn)
+		want := "function bref-fn: runtime provided.al2023 has no local ./bootstrap and its layers: entries must run on Amazon Linux — running in a container\n"
+		if got != want {
+			t.Errorf("containerFallbackNotice() = %q, want %q", got, want)
+		}
+	})
+}
+
 // TestPerFunctionBackendResolveFallbackErrorCombinesBothFacts checks that
 // when the process backend doesn't support fn's runtime *and* the container
 // fallback itself fails to resolve, resolve returns an error naming both

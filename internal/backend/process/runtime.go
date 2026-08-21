@@ -71,14 +71,30 @@ var processRuntimePrefixes = []string{nodeRuntimePrefix, pythonRuntimePrefix, ru
 // plans/process-ruby-and-container-fallback.md's Unit B ("container
 // fallback for unsupported runtimes"). Note that provided.* counts as
 // supported here even when the function's own ./bootstrap file is missing
-// or non-executable: that's ErrBootstrapMissing, a configuration mistake
-// the container backend would hit too (it needs that same bootstrap file),
-// not a missing-shim gap — so it must stay a hard error rather than
-// silently triggering a container fallback.
+// or non-executable *and it has no layers configured*: that's
+// ErrBootstrapMissing, a configuration mistake the container backend would
+// hit too (it needs that same bootstrap file), not a missing-shim gap — so
+// it must stay a hard error rather than silently triggering a container
+// fallback.
+//
+// Carve-out (plans/layers.md Unit D): a provided.* function that *does*
+// configure layers: and has no local ./bootstrap is different — its
+// bootstrap is expected to come from a layer, which is Amazon-Linux
+// content the host can't exec (see RequiresLayerBootstrap). Supports
+// reports false for that case so internal/cli's existing
+// needsContainerFallback gate routes it to the container backend, the same
+// path java21/dotnet8 already take, instead of hitting ErrBootstrapMissing
+// at spawn time for something that would actually work in a container.
+// This is the one case where Supports does an os.Stat (via
+// hasExecutableBootstrap) rather than deciding from fn.Runtime alone.
 func Supports(fn discovery.Function) bool {
 	m := fn.Manifest
 	if m != nil && m.Local.Command != "" {
 		return true
+	}
+
+	if RequiresLayerBootstrap(fn) {
+		return false
 	}
 
 	for _, prefix := range processRuntimePrefixes {
@@ -88,6 +104,40 @@ func Supports(fn discovery.Function) bool {
 	}
 
 	return false
+}
+
+// RequiresLayerBootstrap reports whether fn is exactly the provided.* +
+// layers + no local ./bootstrap carve-out Supports' doc comment describes:
+// a custom runtime whose bootstrap is expected to come from a layer
+// (Bref's win — see plans/layers.md Unit D and Unit C's container-side
+// bootstrap search order) rather than from the function's own directory.
+// Such a bootstrap is Amazon-Linux layer content, built for the container
+// backend's base image, not something Supports can let the process
+// backend attempt to exec on the host. internal/cli's containerFallbackNotice
+// uses this too, to give this case its own accurate wording instead of the
+// generic "no process-backend shim" message — nodejs/python/ruby runtimes
+// truly have no host-runnable equivalent, but a provided.* function with
+// layers does, once it lands in a container.
+func RequiresLayerBootstrap(fn discovery.Function) bool {
+	return strings.HasPrefix(fn.Runtime, providedRuntimePrefix) && hasLayers(fn.Manifest) && !hasExecutableBootstrap(fn.Dir)
+}
+
+// hasLayers reports whether m configures any layers: entries. A nil
+// manifest (mirroring every other m == nil check in this file) has none.
+func hasLayers(m *manifest.Manifest) bool {
+	return m != nil && len(m.Layers) > 0
+}
+
+// hasExecutableBootstrap reports whether fnDir contains an executable
+// `bootstrap` file, using the same shape check runtimeCommand's provided.*
+// branch already applies at spawn time (not a directory, at least one
+// executable bit set). Shared so Supports' layers carve-out and
+// runtimeCommand's ErrBootstrapMissing check can never recognize a
+// different "has a local bootstrap" answer for the same function.
+func hasExecutableBootstrap(fnDir string) bool {
+	info, err := os.Stat(filepath.Join(fnDir, "bootstrap"))
+
+	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
 
 // runtimeCommand resolves the command Start spawns as the RIE's trailing
@@ -127,11 +177,8 @@ func runtimeCommand(fn discovery.Function, absDir, shimDir string) (name string,
 	case strings.HasPrefix(fn.Runtime, rubyRuntimePrefix):
 		return "ruby", []string{filepath.Join(shimDir, rubyShimName), fn.Handler}, nil
 	case strings.HasPrefix(fn.Runtime, providedRuntimePrefix):
-		bootstrap := filepath.Join(absDir, "bootstrap")
-
-		info, statErr := os.Stat(bootstrap)
-		if statErr != nil || info.IsDir() || info.Mode()&0o111 == 0 {
-			return "", nil, fmt.Errorf("%w: %s", ErrBootstrapMissing, bootstrap)
+		if !hasExecutableBootstrap(absDir) {
+			return "", nil, fmt.Errorf("%w: %s", ErrBootstrapMissing, filepath.Join(absDir, "bootstrap"))
 		}
 
 		return "./bootstrap", nil, nil

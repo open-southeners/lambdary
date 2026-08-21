@@ -178,6 +178,70 @@ func TestSupports(t *testing.T) {
 	}
 }
 
+// TestSupportsLayersBootstrapCarveOut covers Supports' plans/layers.md Unit
+// D carve-out, which needs an on-disk fn.Dir (unlike TestSupports' table
+// above) to exercise the os.Stat this carve-out adds.
+func TestSupportsLayersBootstrapCarveOut(t *testing.T) {
+	t.Run("provided.* with layers and no local bootstrap: not supported, routes to the container fallback", func(t *testing.T) {
+		fn := discovery.Function{
+			Runtime:  "provided.al2023",
+			Dir:      t.TempDir(),
+			Manifest: &manifest.Manifest{Layers: []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1"}},
+		}
+
+		if Supports(fn) {
+			t.Error("Supports() = true, want false: provided.* with layers and no local bootstrap needs the container backend")
+		}
+		if !RequiresLayerBootstrap(fn) {
+			t.Error("RequiresLayerBootstrap() = false, want true")
+		}
+	})
+
+	t.Run("provided.* with layers and a local bootstrap: supported, runs as today", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExecutable(t, filepath.Join(dir, "bootstrap"), "#!/bin/sh\necho hi\n")
+
+		fn := discovery.Function{
+			Runtime:  "provided.al2023",
+			Dir:      dir,
+			Manifest: &manifest.Manifest{Layers: []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1"}},
+		}
+
+		if !Supports(fn) {
+			t.Error("Supports() = false, want true: a local bootstrap wins over layers")
+		}
+		if RequiresLayerBootstrap(fn) {
+			t.Error("RequiresLayerBootstrap() = true, want false: fn has its own local bootstrap")
+		}
+	})
+
+	t.Run("provided.* with no layers and no local bootstrap: still supported (unchanged ErrBootstrapMissing case)", func(t *testing.T) {
+		fn := discovery.Function{Runtime: "provided.al2023", Dir: t.TempDir(), Manifest: &manifest.Manifest{}}
+
+		if !Supports(fn) {
+			t.Error("Supports() = false, want true: no layers means this stays a hard ErrBootstrapMissing configuration error, not a fallback")
+		}
+		if RequiresLayerBootstrap(fn) {
+			t.Error("RequiresLayerBootstrap() = true, want false: fn has no layers configured")
+		}
+	})
+
+	t.Run("non-provided runtimes are unaffected by layers", func(t *testing.T) {
+		fn := discovery.Function{
+			Runtime:  "nodejs22.x",
+			Dir:      t.TempDir(),
+			Manifest: &manifest.Manifest{Layers: []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1"}},
+		}
+
+		if !Supports(fn) {
+			t.Error("Supports() = false, want true: nodejs* with layers still has its shim")
+		}
+		if RequiresLayerBootstrap(fn) {
+			t.Error("RequiresLayerBootstrap() = true, want false: the carve-out only applies to provided.*")
+		}
+	})
+}
+
 func TestRieArgs(t *testing.T) {
 	got := rieArgs(54321, 54322, "node", []string{"/shims/x/bootstrap.mjs", "index.handler"})
 
