@@ -21,7 +21,10 @@ one local HTTP server.
 
 Non-goals for the initial version: deployment/packaging to AWS, Windows
 support outside WSL, emulating Lambda orchestration (throttling, scaling,
-IAM), X-Ray, layers, extensions.
+IAM), X-Ray, layers, extensions. *(Amended post-v0: layers are now in
+scope — see the "Layers" section. Extensions remain out of scope as a
+feature, though extension-bearing layers may work incidentally; see the
+same section.)*
 
 ## Background: how Lambda invocation works locally
 
@@ -132,6 +135,9 @@ handler: index.handler
 timeout: 30                 # seconds
 memory: 512                 # MB (advisory locally; passed to container limits)
 architectures: [arm64]      # default: host arch
+layers:                     # post-v0; merged in order at /opt, later wins
+  - arn:aws:lambda:eu-west-1:534081306603:layer:php-83:XX   # fetched + cached
+  - ../shared-layer         # local dir or .zip, relative to the function dir
 environment:
   TABLE_NAME: local-table
 url:
@@ -208,6 +214,77 @@ binary built from pinned upstream source:
 - Caveat to document loudly: the process backend runs on the host OS with host
   libraries — faithful to the Runtime API, not to Amazon Linux. The container
   backend is the fidelity option.
+
+## Layers (post-v0)
+
+Design principle: **layers are a packaging concept, not a runtime concept.**
+At execution time a Lambda layer is just its zip contents extracted under
+`/opt`, merged in declaration order (later layers overwrite earlier), with
+the runtimes' standard search paths (`NODE_PATH`, `PYTHONPATH`,
+`GEM_PATH`/`RUBYLIB`, the Java classpath, `PATH` → `/opt/bin`,
+`LD_LIBRARY_PATH` → `/opt/lib`) already pointing there. The RIE needs no
+changes at all — AWS's base images wire those paths themselves, and the
+embedded RIE binary already carries `/opt/lib` in its default library path
+and the full Extensions API (`/extension/register`, an extensions-directory
+scan). Emulating layers is therefore filesystem + environment work in
+Lambdary, not emulator work.
+
+### Configuration
+
+`layers:` is AWS's own vocabulary — a first-class field on real Lambda
+functions — so it is a top-level manifest key, not a `local:` hint. A list
+of up to 5 entries (AWS's limit), each either:
+
+- a **layer version ARN** (`arn:aws:lambda:<region>:<account>:layer:<name>:<v>`)
+  — what Laravel Sidecar's `layers()`, Bref, and Serverless/SAM templates
+  reference; or
+- a **local path** (directory or `.zip`, relative to the function dir) — the
+  monorepo shared-code case, mirroring Serverless Framework/SAM local layers.
+
+### Resolution & staging
+
+- Local paths are used as-is (dir) or extracted (zip). ARNs are resolved via
+  `lambda:GetLayerVersion` (works with any AWS credentials, including for
+  third-party public layers such as Bref's — the same mechanism SAM CLI
+  uses), downloaded once, and cached under `.lambdary/layers/` keyed by ARN +
+  content digest. The content digest is recorded in `.lambdary/lock`
+  alongside image digests — the existing pinning mechanism fits unchanged.
+- Per function, all resolved layers are **merged into one staging directory**
+  in declared order. Pre-merging is required because Docker cannot overlay
+  multiple binds at one mount target, and it is also what gives AWS's
+  "later layer wins" semantics.
+
+### Per backend
+
+- **Container backend** (all runtimes): one extra flag —
+  `-v <staging>:/opt:ro`. The base images do the rest. For `provided.*`,
+  the entrypoint mount must emulate real Lambda's bootstrap search order:
+  `/var/task/bootstrap` first, then `/opt/bootstrap`. That single change is
+  what lets a Bref function run with **no local `bootstrap` file** — the
+  layer supplies it, exactly as on AWS.
+- **Process backend** (Node/Python/Ruby, pure-code layers only): there is no
+  `/opt` on the host, so the env assembly points the runtimes' search
+  variables at the staging dir instead (`NODE_PATH=<staging>/nodejs/node_modules`,
+  `PYTHONPATH=<staging>/python`, `RUBYLIB`/`GEM_PATH`, `<staging>/bin` on
+  `PATH`). The shims need no changes — they resolve imports through those
+  standard mechanisms. Hard limit, documented loudly like the backend's
+  existing fidelity caveat: layer content compiled for Amazon Linux (native
+  binaries, `.so` files, Bref's `php`) will not run on the host. A
+  `provided.*` function whose bootstrap comes from a layer falls back to the
+  container backend automatically, reusing the existing "no shim for this
+  runtime" fallback path — `--backend process`/`auto` still never fail a
+  function outright.
+
+| Runtime | Container backend | Process backend |
+|---|---|---|
+| `nodejs*` / `python*` / `ruby*` | full | pure-code layers via search-path env |
+| `java*` / `dotnet*` | full | — (already container-fallback) |
+| `provided.*` (Bref, Go) | full, incl. `bootstrap` from layer | only host-compatible binaries; else container fallback |
+
+Extensions shipped inside layers (`/opt/extensions`) are **not a supported
+feature**: the RIE exposes the Extensions API surface, so they may work in
+the container backend incidentally, but Lambdary makes no lifecycle
+guarantees until a dedicated verification spike says otherwise.
 
 ## Routing & event mapping
 
@@ -298,11 +375,21 @@ can come later if we need event streams.
   `bootstrap` entrypoint in the function directory. Bref works because Bref
   follows that contract on real Lambda; Lambdary carries no Bref-specific
   logic, and the same transparency applies to any other custom-runtime
-  framework.
+  framework. *(Amended by the layers decision: `bootstrap` may instead come
+  from a layer at `/opt/bootstrap`, searched after `/var/task/bootstrap` —
+  still AWS's own contract, still framework-free.)*
 - **Version pinning:** yes — a `.lambdary/lock` file pins container image
   digests and the vendored RIE tag for reproducible dev environments. (The
   original wording also pinned "RIC versions"; the M3 shim amendment made
   that moot — shims are embedded in the `lambdary` binary itself.)
+- **Layers:** adopted post-v0 (originally a non-goal). Emulated as pure
+  filesystem + environment work — resolve (ARN download or local path),
+  merge in order into a staging dir, mount at `/opt` (container) or expose
+  via runtime search-path env vars (process) — never by touching the RIE,
+  which already handles `/opt` semantics itself. `layers:` is a top-level
+  manifest key because it is AWS's own configuration vocabulary. ARN
+  downloads are cached and digest-pinned through the existing
+  `.lambdary/lock`. See the "Layers" section and `plans/layers.md`.
 - **Route collisions:** detected at discovery time, but the binary is
   fail-safe — the dev server never refuses to start over a collision.
   Non-colliding functions serve normally; a warning is logged at startup, and
