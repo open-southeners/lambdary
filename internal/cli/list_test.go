@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/manifest"
 )
 
 func TestRenderListTable(t *testing.T) {
@@ -148,6 +149,47 @@ func TestRenderListEmpty(t *testing.T) {
 	want := "no functions found under testdata/empty\n"
 	if errOut.String() != want {
 		t.Errorf("errOut = %q, want %q", errOut.String(), want)
+	}
+}
+
+// TestRenderListLayeredFunction confirms plans/layers.md's Unit F claim
+// that `lambdary list` needs no changes for `layers:`: renderList only
+// reads discovery.Function's own top-level fields (never fn.Manifest), so
+// a function with layers configured lists the same as any other — no
+// column, no warning, no special-casing.
+func TestRenderListLayeredFunction(t *testing.T) {
+	fns := []discovery.Function{
+		{
+			Name:     "layered",
+			Dir:      "functions/layered",
+			Runtime:  "python3.13",
+			Route:    "/layered",
+			Backend:  "auto",
+			Manifest: &manifest.Manifest{Layers: []string{"../shared-layer"}},
+		},
+	}
+
+	var out, errOut bytes.Buffer
+	renderList(&out, &errOut, fns, "functions")
+
+	if errOut.Len() != 0 {
+		t.Errorf("errOut = %q, want empty (a valid layers: entry is not a warning)", errOut.String())
+	}
+
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2 (header + 1 row):\n%s", len(lines), out.String())
+	}
+
+	got := strings.Fields(lines[1])
+	want := []string{"layered", "python3.13", "auto", "/layered", "layered"}
+	if len(got) != len(want) {
+		t.Fatalf("row = %q, want fields %v", lines[1], want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("row field %d = %q, want %q", i, got[i], w)
+		}
 	}
 }
 
