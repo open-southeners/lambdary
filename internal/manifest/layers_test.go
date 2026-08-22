@@ -19,6 +19,18 @@ func TestParseLayerRef(t *testing.T) {
 			wantRegion: "eu-west-1",
 		},
 		{
+			name:       "govcloud partition ARN",
+			entry:      "arn:aws-us-gov:lambda:us-gov-west-1:534081306603:layer:php-83:1",
+			wantKind:   LayerRefKindARN,
+			wantRegion: "us-gov-west-1",
+		},
+		{
+			name:       "china partition ARN",
+			entry:      "arn:aws-cn:lambda:cn-north-1:534081306603:layer:php-83:1",
+			wantKind:   LayerRefKindARN,
+			wantRegion: "cn-north-1",
+		},
+		{
 			name:     "local directory path",
 			entry:    "../shared-layer",
 			wantKind: LayerRefKindPath,

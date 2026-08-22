@@ -52,16 +52,3 @@ Discovered during orchestrated work; routed here instead of fixed inline.
 - **Fix:** per-runtime build hooks (e.g. `go build -o bootstrap` in-container
   or on host) before start/restart, or document that compiled runtimes
   require a `Dockerfile` or a manual build step.
-
-## Layer ARN validation rejects non-default AWS partitions (layers Unit A)
-
-- **Where:** `internal/manifest/layers.go` (`layerARNPattern`).
-- **What:** the layer version ARN pattern hardcodes the `aws` partition
-  (`arn:aws:lambda:...`), per plans/layers.md Unit A as written. Layer ARNs
-  from GovCloud (`arn:aws-us-gov:lambda:...`) and China regions
-  (`arn:aws-cn:lambda:...`) are valid on real Lambda but fail manifest
-  validation here with `ErrInvalidLayers`.
-- **Fix:** widen the partition group to `arn:(aws|aws-[a-z-]+):lambda:...`
-  (or `[a-z-]+` for any partition) and add table cases for both alternate
-  partitions. Decide before Unit E lands, since the fetch path should build
-  its SDK client from the same parse.

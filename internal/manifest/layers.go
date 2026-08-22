@@ -47,13 +47,17 @@ type LayerRef struct {
 
 // layerARNPattern matches a Lambda layer *version* ARN:
 //
-//	arn:aws:lambda:<region>:<account-id>:layer:<name>:<version>
+//	arn:<partition>:lambda:<region>:<account-id>:layer:<name>:<version>
 //
+// The partition group accepts "aws" and its alternates ("aws-us-gov",
+// "aws-cn", ...) — GovCloud and China-region layer ARNs are valid on real
+// Lambda, and the SDK resolves the right endpoint from the region string
+// alone, so no other field needs to know which partition a ref came from.
 // The account id must be exactly 12 digits and the version must be
 // numeric. This deliberately rejects versionless layer ARNs (e.g.
 // "arn:aws:lambda:eu-west-1:534081306603:layer:php-83"), which
 // GetLayerVersion cannot use.
-var layerARNPattern = regexp.MustCompile(`^arn:aws:lambda:([a-z0-9-]+):(\d{12}):layer:([A-Za-z0-9_-]+):(\d+)$`)
+var layerARNPattern = regexp.MustCompile(`^arn:aws(?:-[a-z]+)*:lambda:([a-z0-9-]+):(\d{12}):layer:([A-Za-z0-9_-]+):(\d+)$`)
 
 // ParseLayerRef classifies a single layers: entry as a layer version ARN or
 // a local path. It does no I/O: local-path existence is checked later, at
