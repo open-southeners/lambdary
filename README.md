@@ -102,12 +102,29 @@ environment:
 url:
   path: /api              # local route, default /<name>
   payload: "2.0"          # event format (Function URL / API Gateway v2)
+layers:                   # up to 5, merged into /opt in order (later entries win)
+  - arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1  # a layer version ARN (e.g. Bref's PHP layer)
+  - ../shared-layer        # a local directory or .zip, relative to the function dir
 local:                    # local-development-only section
   backend: auto           # auto | container | process
   image: ""               # container image override
   command: ""             # process-backend command override
   env_file: ""            # extra environment from a dotenv-style file (explicit `environment` keys win)
 ```
+
+`layers:` mirrors AWS Lambda's own Layers feature, not a local-only hint, so
+it lives at the top level like `runtime` or `environment`. Up to 5 entries,
+each a layer version ARN or a local path, merged in declared order into
+`/opt` — later entries win on file conflicts, exactly like AWS. ARN entries
+are fetched using your own AWS credentials (the standard SDK credential
+chain), which is enough to pull public third-party layers too, such as
+Bref's PHP layers; fetched content is cached under `.lambdary/` and
+digest-pinned in `.lambdary/lock` so a function keeps starting from the
+same layer version across machines. Local path entries (a directory or a
+`.zip`, resolved relative to the function directory) need no AWS
+credentials at all. On the container backend, a Bref-style `provided.*`
+function can now get its `bootstrap` straight from a layer — no local
+`bootstrap` file required, matching AWS's own bootstrap search order.
 
 Project-wide `lambdary.yml` next to your functions:
 
@@ -127,6 +144,14 @@ Unknown keys in either file are rejected, so typos surface immediately.
 - The process backend runs your code on your host's runtime versions —
   faithful to the Lambda Runtime API, not to Amazon Linux. Use the container
   backend when fidelity matters.
+- `layers:` on the process backend works for pure-code layers, resolved
+  through the runtimes' own standard search paths (`NODE_PATH`, `PYTHONPATH`,
+  `RUBYLIB`/`GEM_PATH`, `PATH`) instead of a real `/opt`. Layer content
+  compiled for Amazon Linux (native binaries, Bref's `php`) needs the
+  container backend, same fidelity trade-off as the bullet above; a
+  `provided.*` function whose `bootstrap` comes from a layer falls back to
+  the container backend automatically, with a notice, since it can't run as
+  a host process at all.
 - Requests to one function are serialized (the emulator processes one
   invocation at a time), matching single-instance Lambda semantics.
 - Route or name collisions never prevent startup: healthy functions keep

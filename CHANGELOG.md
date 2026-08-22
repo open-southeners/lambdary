@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Lambda layers**: a `layers:` manifest key accepting layer version ARNs
+  and local directories/`.zip` files — up to 5 per function, merged in
+  order into `/opt` exactly like AWS (later entries win). ARNs are fetched
+  using your own AWS credentials (works for public third-party layers such
+  as Bref's), cached under `.lambdary/`, and digest-pinned in
+  `.lambdary/lock`. Bref-style custom runtimes (`provided.*`) can now get
+  their `bootstrap` from a layer instead of needing a local `bootstrap`
+  file. On the process backend, pure-code layers resolve through the
+  runtimes' own standard search paths (`NODE_PATH`, `PYTHONPATH`,
+  `RUBYLIB`/`GEM_PATH`, `PATH`); a function whose layer content must run on
+  Amazon Linux falls back to the container backend automatically, with a
+  notice.
+
 ## [1.0.1] - 2026-08-18
 
 ### Changed
