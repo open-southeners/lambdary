@@ -85,6 +85,70 @@ func TestRecordImageRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRecordLayerRoundTrip covers RecordLayer's auto-save, mirroring
+// TestRecordImageRoundTrip for the layers: map plans/layers.md's Unit E
+// adds.
+func TestRecordLayerRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	l, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+
+	const arn = "arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1"
+	const digest = "sha256base64=="
+
+	if err := l.RecordLayer(arn, digest); err != nil {
+		t.Fatalf("RecordLayer() unexpected error: %v", err)
+	}
+
+	got, ok := l.LayerDigest(arn)
+	if !ok || got != digest {
+		t.Errorf("LayerDigest(%q) = %q, %v, want %q, true", arn, got, ok, digest)
+	}
+
+	reloaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() (reload) unexpected error: %v", err)
+	}
+
+	got, ok = reloaded.LayerDigest(arn)
+	if !ok || got != digest {
+		t.Errorf("reloaded LayerDigest(%q) = %q, %v, want %q, true", arn, got, ok, digest)
+	}
+}
+
+// TestLoadWithoutLayersKey covers the additive-field contract: a lock file
+// written before Unit E (no `layers:` key at all) still loads cleanly, with
+// LayerDigest simply reporting "not found" rather than erroring.
+func TestLoadWithoutLayersKey(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(dir, dirName), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	pre := "version: 1\nrie: v1.35\nimages:\n  public.ecr.aws/lambda/nodejs:22: sha256:deadbeef\n"
+	if err := os.WriteFile(filepath.Join(dir, dirName, fileName), []byte(pre), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	l, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+
+	if _, ok := l.LayerDigest("arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1"); ok {
+		t.Error("LayerDigest() on a pre-Unit-E lock = found, want not found")
+	}
+
+	got, ok := l.ImageDigest("public.ecr.aws/lambda/nodejs:22")
+	if !ok || got != "sha256:deadbeef" {
+		t.Errorf("ImageDigest() = %q, %v, want %q, true (pre-existing images: untouched)", got, ok, "sha256:deadbeef")
+	}
+}
+
 // TestSetRIERoundTrip covers SetRIE's auto-save the same way.
 func TestSetRIERoundTrip(t *testing.T) {
 	dir := t.TempDir()
@@ -108,8 +172,9 @@ func TestSetRIERoundTrip(t *testing.T) {
 	}
 }
 
-// TestSaveWritesVersionedYAML checks the on-disk shape: version/rie/images
-// keys, per plans/m5-extras.md's Unit C format.
+// TestSaveWritesVersionedYAML checks the on-disk shape: version/rie/images/
+// layers keys, per plans/m5-extras.md's Unit C format and plans/layers.md's
+// Unit E addition.
 func TestSaveWritesVersionedYAML(t *testing.T) {
 	dir := t.TempDir()
 
@@ -126,13 +191,20 @@ func TestSaveWritesVersionedYAML(t *testing.T) {
 		t.Fatalf("RecordImage() unexpected error: %v", err)
 	}
 
+	if err := l.RecordLayer("arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1", "sha256base64=="); err != nil {
+		t.Fatalf("RecordLayer() unexpected error: %v", err)
+	}
+
 	raw, err := os.ReadFile(filepath.Join(dir, dirName, fileName))
 	if err != nil {
 		t.Fatalf("reading lock file: %v", err)
 	}
 
 	got := string(raw)
-	for _, want := range []string{"version: 1", "rie: v1.35", "images:", "public.ecr.aws/lambda/nodejs:22: sha256:deadbeef"} {
+	for _, want := range []string{
+		"version: 1", "rie: v1.35", "images:", "public.ecr.aws/lambda/nodejs:22: sha256:deadbeef",
+		"layers:", "arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1: sha256base64==",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("lock file content = %q, want it to contain %q", got, want)
 		}
