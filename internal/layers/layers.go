@@ -1,9 +1,13 @@
 // Package layers resolves a function's `layers:` manifest entries
 // (internal/manifest.LayerRef, produced by manifest.ParseLayerRef) into a
-// single merged staging directory, per plans/layers.md's Unit B. It is pure
-// filesystem work: no AWS SDK calls and no network access live here — a
-// layer version ARN that isn't already in the cache is a Stage error naming
-// Unit E's fetch step, which this package deliberately does not implement.
+// single merged staging directory, per plans/layers.md's Unit B, and (Unit
+// E) fetches layer version ARNs from AWS Lambda into this package's on-disk
+// cache. Stage itself is pure filesystem work and never touches the
+// network: a layer version ARN that isn't already in the cache
+// (CachePath) is a Stage error naming the ARN — internal/cli's
+// discovery-time wiring (see internal/cli/layers.go) is what calls Fetch
+// eagerly, before Stage ever runs, so a fetch failure only fails that one
+// function's Start rather than blocking discovery for every function.
 // Backend wiring (mounting the staging dir at `/opt` in the container
 // backend, or exporting it via runtime search-path env vars in the process
 // backend) is Units C and D; this package only produces the directory they
@@ -112,19 +116,31 @@ func resolveInto(fnName string, ref manifest.LayerRef, fnDir, cacheDir, staging 
 }
 
 // resolveARN merges the cached content for an ARN ref into staging. It
-// never fetches: a cache miss is a clear error naming the ARN, per the
-// package doc, so this package stays buildable and testable with zero AWS
-// dependency (plans/layers.md Unit E adds fetching).
+// never fetches itself: a cache miss is a clear error naming the ARN, per
+// the package doc — Stage's own job stays independent of Fetch, so nothing
+// here ever triggers an implicit network call; internal/cli is what calls
+// Fetch, and only before Stage runs.
 func resolveARN(fnName string, ref manifest.LayerRef, cacheDir, staging string) error {
 	src := CachePath(cacheDir, ref)
 
 	info, err := os.Stat(src)
 	if err != nil || !info.IsDir() {
-		return fmt.Errorf("layers: %s: layer %s not cached and ARN fetching is not implemented yet (see plans/layers.md Unit E)", fnName, ref.Raw)
+		return fmt.Errorf("layers: %s: layer %s is not cached — check the dev server's startup warnings for a fetch failure (missing/invalid AWS credentials, access denied, ...) and see plans/layers.md Unit E", fnName, ref.Raw)
 	}
 
 	if err := copyTree(src, staging); err != nil {
 		return fmt.Errorf("layers: %s: layer %s: %w", fnName, ref.Raw, err)
+	}
+
+	// copyTree just carried Fetch's markerFileName (".codesha256", written
+	// at the cache dir's root — see fetch.go) into staging along with the
+	// real content. That marker is a cache-corruption check for Fetch's own
+	// callers (internal/cli), not part of the layer itself, and real
+	// Lambda's /opt has no such file — strip it here so it never reaches a
+	// function's staged /opt. The cache dir at src is left untouched, so a
+	// later Stage call (or internal/cli's corruption check) still finds it.
+	if err := os.Remove(filepath.Join(staging, markerFileName)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("layers: %s: layer %s: removing staged cache marker: %w", fnName, ref.Raw, err)
 	}
 
 	return nil
