@@ -40,13 +40,21 @@ const (
 )
 
 // data is the on-disk shape of a lock file, per plans/m5-extras.md's Unit
-// C: `version: 1`, `rie: v1.35`, `images: {<tag-ref>: <sha256 digest>}`.
-// Field order matches declaration order under yaml.v3's Marshal, so a
-// freshly written lock reads version/rie/images top to bottom.
+// C: `version: 1`, `rie: v1.35`, `images: {<tag-ref>: <sha256 digest>}`,
+// plus plans/layers.md's Unit E `layers: {<layer version arn>: <codesha256
+// digest>}`. Field order matches declaration order under yaml.v3's
+// Marshal, so a freshly written lock reads
+// version/rie/images/layers top to bottom.
+//
+// Adding Layers keeps schemaVersion at 1: it's a purely additive map key,
+// so an older lambdary binary's Load (which knows nothing about `layers:`)
+// just ignores it via yaml.v3's default unmarshal-unknown-fields behavior,
+// per this package's forgiving "never block a run" contract.
 type data struct {
 	Version int               `yaml:"version"`
 	RIE     string            `yaml:"rie,omitempty"`
 	Images  map[string]string `yaml:"images,omitempty"`
+	Layers  map[string]string `yaml:"layers,omitempty"`
 }
 
 // Lock is one project's `.lambdary/lock`, loaded (or freshly initialized)
@@ -71,7 +79,7 @@ type Lock struct {
 //     .lambdary/lock: <err>") and proceed unpinned rather than fail the
 //     run — Load itself never returns a nil *Lock.
 func Load(dir string) (*Lock, error) {
-	l := &Lock{dir: dir, data: data{Version: schemaVersion, Images: map[string]string{}}}
+	l := &Lock{dir: dir, data: data{Version: schemaVersion, Images: map[string]string{}, Layers: map[string]string{}}}
 
 	path := l.path()
 
@@ -95,6 +103,10 @@ func Load(dir string) (*Lock, error) {
 
 	if d.Images == nil {
 		d.Images = map[string]string{}
+	}
+
+	if d.Layers == nil {
+		d.Layers = map[string]string{}
 	}
 
 	l.data = d
@@ -131,6 +143,35 @@ func (l *Lock) RecordImage(tag, digest string) error {
 	}
 
 	l.data.Images[tag] = digest
+
+	return l.saveLocked()
+}
+
+// LayerDigest returns the CodeSha256 pinned for arn (a full layer version
+// ARN), and whether one was found. See plans/layers.md's Unit E: a mismatch
+// between this and the digest internal/layers.CachedDigest reads back from
+// its on-disk cache marker signals local cache corruption, not a change on
+// AWS — layer versions are immutable.
+func (l *Lock) LayerDigest(arn string) (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	digest, ok := l.data.Layers[arn]
+
+	return digest, ok
+}
+
+// RecordLayer pins arn (a full layer version ARN) to digest (its
+// CodeSha256) and saves the lock, mirroring RecordImage.
+func (l *Lock) RecordLayer(arn, digest string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.data.Layers == nil {
+		l.data.Layers = map[string]string{}
+	}
+
+	l.data.Layers[arn] = digest
 
 	return l.saveLocked()
 }
