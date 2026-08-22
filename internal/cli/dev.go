@@ -89,6 +89,14 @@ type devServer struct {
 
 	streamer *logStreamer
 
+	// lock and cacheDir are resolved once, in run(), and reused by every
+	// buildStack call (the initial one and every structural reload) so
+	// ensureLayersFetched (plans/layers.md's Unit E) and
+	// resolveManagerBackend see the same project-level lock and cache
+	// directory throughout the server's lifetime.
+	lock     *lockfile.Lock
+	cacheDir string
+
 	// ready receives the server's actual listen address once bound, so
 	// tests (and, in principle, future callers) can dial it without
 	// guessing the resolved port. Buffered 1: run() sends at most once.
@@ -132,10 +140,10 @@ func (d *devServer) run(ctx context.Context) error {
 	if err != nil {
 		fmt.Fprintf(d.errOut, "warning: ignoring corrupt .lambdary/lock: %s\n", err)
 	}
+	d.lock = lock
+	d.cacheDir = cacheDirFor(d.root)
 
-	cacheDir := cacheDirFor(d.root)
-
-	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock, cacheDir)
+	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock, d.cacheDir)
 	if err != nil {
 		return err
 	}
@@ -165,7 +173,14 @@ func (d *devServer) run(ctx context.Context) error {
 // discovery error is returned as-is, letting the caller decide whether that
 // means "fail startup" (run) or "keep the previous configuration" (a
 // reload).
-func (d *devServer) buildStack(_ context.Context, b router.BackendResolver) (*devStack, error) {
+//
+// buildStack is also the one place a fresh function set is produced (both
+// at startup and on every structural reload), so it's where
+// ensureLayersFetched (plans/layers.md's Unit E) runs: every layer version
+// ARN newly discovered functions reference gets fetched into
+// internal/layers' cache before Stage would ever need it, with fetch
+// failures only warned on errOut rather than failing the reload.
+func (d *devServer) buildStack(ctx context.Context, b router.BackendResolver) (*devStack, error) {
 	scanRoot, cfg, err := resolveRoot(d.root)
 	if err != nil {
 		return nil, err
@@ -179,6 +194,8 @@ func (d *devServer) buildStack(_ context.Context, b router.BackendResolver) (*de
 	if len(fns) == 0 {
 		return nil, fmt.Errorf("no functions found under %s", scanRoot)
 	}
+
+	ensureLayersFetched(ctx, fns, d.cacheDir, d.lock, d.errOut)
 
 	for _, fn := range fns {
 		for _, w := range fn.Warnings {

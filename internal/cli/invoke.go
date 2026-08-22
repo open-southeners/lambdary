@@ -112,8 +112,14 @@ func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root
 	if err != nil {
 		fmt.Fprintf(errOut, "warning: ignoring corrupt .lambdary/lock: %s\n", err)
 	}
+	cacheDir := cacheDirFor(root)
 
-	return invokeStandalone(ctx, out, errOut, fn, event, backendFlag, lock, cacheDirFor(root))
+	// Only fn's own layers matter for a single standalone invoke — no need
+	// to fetch every other discovered function's ARNs (and no need for
+	// credentials they might require) just to run this one.
+	ensureLayersFetched(ctx, []discovery.Function{fn}, cacheDir, lock, errOut)
+
+	return invokeStandalone(ctx, out, errOut, fn, event, backendFlag, lock, cacheDir)
 }
 
 // resolveEvent reads the invoke payload from source: a JSON file path,
