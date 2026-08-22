@@ -200,6 +200,45 @@ func TestStage_ARNCacheHit(t *testing.T) {
 	}
 }
 
+// TestStage_ARNCacheHitMarkerNotStaged is a regression test: Fetch writes
+// its own markerFileName (".codesha256") at the ARN cache dir's root (see
+// fetch.go) so internal/cli can later detect cache corruption, but that
+// marker is not part of the layer's own content and must never leak into a
+// function's staged /opt — real Lambda has no such file there.
+func TestStage_ARNCacheHitMarkerNotStaged(t *testing.T) {
+	fnDir := t.TempDir()
+	cacheDir := t.TempDir()
+
+	ref := manifest.LayerRef{
+		Kind:   manifest.LayerRefKindARN,
+		Raw:    "arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1",
+		Region: "eu-west-1",
+	}
+
+	writeFile(t, filepath.Join(CachePath(cacheDir, ref), "python", "cached.py"), "cached content\n", 0o644)
+	writeFile(t, filepath.Join(CachePath(cacheDir, ref), markerFileName), "the-codesha256\n", 0o644)
+
+	staging, err := Stage("myfn", []manifest.LayerRef{ref}, fnDir, cacheDir)
+	if err != nil {
+		t.Fatalf("Stage() unexpected error: %v", err)
+	}
+
+	got := readFile(t, filepath.Join(staging, "python", "cached.py"))
+	if want := "cached content\n"; got != want {
+		t.Errorf("staged python/cached.py = %q, want %q", got, want)
+	}
+
+	if _, err := os.Stat(filepath.Join(staging, markerFileName)); !os.IsNotExist(err) {
+		t.Errorf("staged %s exists, want it stripped from staging (err=%v)", markerFileName, err)
+	}
+
+	// The cache dir itself must be untouched: later Stage/CachedDigest
+	// callers still need to find the marker there.
+	if got, ok := CachedDigest(cacheDir, ref); !ok || got != "the-codesha256" {
+		t.Errorf("CachedDigest() = %q, %v, want %q, true (cache dir's own marker must survive staging)", got, ok, "the-codesha256")
+	}
+}
+
 func TestStage_ARNCacheMiss(t *testing.T) {
 	fnDir := t.TempDir()
 	cacheDir := t.TempDir()
