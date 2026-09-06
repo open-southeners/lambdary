@@ -116,7 +116,7 @@ func TestConfigApplyDefaults(t *testing.T) {
 			Architectures: []string{"arm64"},
 			Layers:        []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1", "../shared-layer"},
 			Environment:   map[string]string{"STAGE": "local"},
-			URL:           URL{Path: "/default", Payload: "1.0"},
+			URL:           URL{Path: "/default", Payload: "1.0", InvokeMode: "RESPONSE_STREAM"},
 			Local: Local{
 				Backend: "container",
 				Image:   "default-image:latest",
@@ -139,7 +139,7 @@ func TestConfigApplyDefaults(t *testing.T) {
 			Architectures: []string{"arm64"},
 			Layers:        []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1", "../shared-layer"},
 			Environment:   map[string]string{"STAGE": "local"},
-			URL:           URL{Path: "/default", Payload: "1.0"},
+			URL:           URL{Path: "/default", Payload: "1.0", InvokeMode: "RESPONSE_STREAM"},
 			Local: Local{
 				Backend: "container",
 				Image:   "default-image:latest",
@@ -163,7 +163,7 @@ func TestConfigApplyDefaults(t *testing.T) {
 			Architectures: []string{"x86_64"},
 			Layers:        []string{"../own-layer"},
 			Environment:   map[string]string{"OWN": "value"},
-			URL:           URL{Path: "/function_b", Payload: "2.0"},
+			URL:           URL{Path: "/function_b", Payload: "2.0", InvokeMode: "BUFFERED"},
 			Local: Local{
 				Backend: "process",
 				Image:   "own-image:latest",
