@@ -406,6 +406,187 @@ func TestRouterRouteUnsupportedPayloadReturns501(t *testing.T) {
 	}
 }
 
+// streamFrame builds a raw http-integration-response payload — prelude
+// JSON, the eight-NUL delimiter, then body — mirroring what
+// awslambda.streamifyResponse produces, for router tests exercising
+// RESPONSE_STREAM handling. A router-local copy of event's own unexported
+// test helper of the same shape, since event.frameDelimiter isn't
+// exported for this package to reuse directly.
+func streamFrame(prelude string, body []byte) []byte {
+	payload := []byte(prelude)
+	payload = append(payload, 0, 0, 0, 0, 0, 0, 0, 0)
+	payload = append(payload, body...)
+
+	return payload
+}
+
+func TestRouterRouteStreamingFramedPayloadParsed(t *testing.T) {
+	b := newFakeBackend()
+	b.newInstance = func(string) *fakeInstance {
+		framed := streamFrame(`{"statusCode":202,"headers":{"Content-Type":"text/plain","X-Stream":"yes"},"cookies":["a=1"]}`, []byte("chunk-1;chunk-2;"))
+		return newFakeInstance(http.StatusOK, framed, "application/octet-stream", 0)
+	}
+
+	streaming := fn("streamfn")
+	streaming.Manifest = &manifest.Manifest{URL: manifest.URL{InvokeMode: "RESPONSE_STREAM"}}
+
+	fns := []discovery.Function{streaming}
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodGet, "/streamfn", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (the handler's own status, parsed from the frame's prelude); body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Header().Get("Content-Type"), "text/plain"; got != want {
+		t.Errorf("Content-Type = %q, want %q (from the prelude, not application/octet-stream's upstream default)", got, want)
+	}
+	if got, want := rec.Header().Get("X-Stream"), "yes"; got != want {
+		t.Errorf("X-Stream = %q, want %q", got, want)
+	}
+	if got, want := len(rec.Result().Cookies()), 1; got != want {
+		t.Fatalf("Set-Cookie count = %d, want %d", got, want)
+	}
+	if got, want := rec.Body.String(), "chunk-1;chunk-2;"; got != want {
+		t.Errorf("body = %q, want %q (the frame's body, with the prelude and delimiter stripped)", got, want)
+	}
+}
+
+func TestRouterRouteStreamingUnframedPayloadFallsBackToBuffered(t *testing.T) {
+	b := newFakeBackend()
+	b.newInstance = func(string) *fakeInstance {
+		return newEchoInstance(http.StatusOK)
+	}
+
+	streaming := fn("streamfn")
+	streaming.Manifest = &manifest.Manifest{URL: manifest.URL{InvokeMode: "RESPONSE_STREAM"}}
+
+	fns := []discovery.Function{streaming}
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodGet, "/streamfn/users?x=1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (event.ErrNotFramed falls back to the ordinary buffered path); body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Header().Get("Content-Type"), "application/json"; got != want {
+		t.Errorf("Content-Type = %q, want %q (identical to today's non-streaming output)", got, want)
+	}
+
+	var ev event.RequestV2
+	decodeJSON(t, rec, &ev)
+	if ev.RawPath != "/users" {
+		t.Errorf("rawPath = %q, want %q (route prefix stripped, same as any other v2 route)", ev.RawPath, "/users")
+	}
+}
+
+func TestRouterRouteBufferedDeclaredFramedPayloadServedVerbatim(t *testing.T) {
+	framed := streamFrame(`{"statusCode":202,"headers":{"X-Stream":"yes"}}`, []byte("chunk-1;chunk-2;"))
+
+	b := newFakeBackend()
+	b.newInstance = func(string) *fakeInstance {
+		return newFakeInstance(http.StatusOK, framed, "application/octet-stream", 0)
+	}
+
+	buffered := fn("buffered")
+	buffered.Manifest = &manifest.Manifest{URL: manifest.URL{InvokeMode: "BUFFERED"}}
+
+	fns := []discovery.Function{buffered}
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodGet, "/buffered", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	// A function that stays BUFFERED never reaches event.ToHTTPStream at
+	// all, so a frame it happens to return is handled exactly as it was
+	// before invoke mode existed: shapedStatusCode fails to parse the
+	// whole payload as JSON (the trailing NULs and body aren't valid
+	// JSON), so ToHTTP's writeUnshaped path wins — 200, application/json,
+	// the raw frame written verbatim. Proves BUFFERED users see no
+	// behaviour change from this feature landing.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (today's unshaped fallback, unchanged); body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Header().Get("Content-Type"), "application/json"; got != want {
+		t.Errorf("Content-Type = %q, want %q", got, want)
+	}
+	if got, want := rec.Body.Bytes(), framed; !bytes.Equal(got, want) {
+		t.Errorf("body = %q, want the raw frame served verbatim: %q", got, want)
+	}
+}
+
+func TestRouterRouteStreamingFunctionErrorStillEnvelope(t *testing.T) {
+	b := newFakeBackend()
+	b.newInstance = func(string) *fakeInstance {
+		return newFakeInstance(http.StatusOK, []byte(`{"errorType":"ValueError","errorMessage":"boom"}`), "application/json", 0)
+	}
+
+	streaming := fn("streamfn")
+	streaming.Manifest = &manifest.Manifest{URL: manifest.URL{InvokeMode: "RESPONSE_STREAM"}}
+
+	fns := []discovery.Function{streaming}
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodGet, "/streamfn", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	// isFunctionError must run before invoke mode is even consulted: an
+	// unhandled exception is an ordinary JSON error envelope, never a
+	// frame, so the 502 envelope must keep working exactly as it does for
+	// a BUFFERED function.
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Message string `json:"message"`
+		Error   struct {
+			ErrorType    string `json:"errorType"`
+			ErrorMessage string `json:"errorMessage"`
+		} `json:"error"`
+	}
+	decodeJSON(t, rec, &payload)
+	if payload.Message != "function error" {
+		t.Errorf("message = %q, want %q", payload.Message, "function error")
+	}
+	if payload.Error.ErrorType != "ValueError" || payload.Error.ErrorMessage != "boom" {
+		t.Errorf("error = %+v, want envelope carried through", payload.Error)
+	}
+}
+
+func TestRouterRouteStreamingMalformedFrameIs502(t *testing.T) {
+	b := newFakeBackend()
+	b.newInstance = func(string) *fakeInstance {
+		// SplitFrame's own gate only checks for a top-level integer
+		// statusCode; a non-object "headers" value passes that gate but
+		// fails ToHTTPStream's own decode into event.Prelude, taking the
+		// same "malformed function response" 502 path a bad shaped
+		// event.ToHTTP response does.
+		framed := streamFrame(`{"statusCode":200,"headers":[1,2,3]}`, []byte("chunk"))
+		return newFakeInstance(http.StatusOK, framed, "application/octet-stream", 0)
+	}
+
+	streaming := fn("streamfn")
+	streaming.Manifest = &manifest.Manifest{URL: manifest.URL{InvokeMode: "RESPONSE_STREAM"}}
+
+	fns := []discovery.Function{streaming}
+	h := New(NewManager(b, fns), fns)
+
+	req := httptest.NewRequest(http.MethodGet, "/streamfn", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRouterRouteFunctionErrorEnvelope(t *testing.T) {
 	b := newFakeBackend()
 	b.newInstance = func(string) *fakeInstance {

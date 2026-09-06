@@ -35,6 +35,13 @@ const (
 	payloadV1 = "1.0"
 )
 
+// invokeModeResponseStream is the url.invoke_mode value
+// (manifest.URL.InvokeMode) that makes handleRouteV2 try
+// event.ToHTTPStream before falling back to event.ToHTTP. Named as its own
+// const, rather than importing manifest for a single string, to mirror
+// payloadV2/payloadV1 immediately above.
+const invokeModeResponseStream = "RESPONSE_STREAM"
+
 // unsupportedPayloadMessage is the 501 body for a function route whose
 // manifest requests a payload format the router doesn't understand.
 const unsupportedPayloadMessage = `payload format %s is not supported — supported values are "2.0" and "1.0"`
@@ -381,8 +388,20 @@ func (rt *Router) handleRoute(w http.ResponseWriter, r *http.Request, matched []
 // handleRouteV2 serves fn's route under the Function URL / HTTP API "2.0"
 // payload format (payloadV2): build the v2 event for r, invoke fn the same
 // way the passthrough does (Ensure/lock/timeout, via (*Router).invoke),
-// then translate the raw invoke result back into an HTTP response with
-// event.ToHTTP.
+// then translate the raw invoke result back into an HTTP response.
+//
+// isFunctionError runs first, unconditionally, before invoke mode is even
+// consulted: an unhandled exception is reported by the runtime as an
+// ordinary JSON error envelope, never a frame, so the 502 function-error
+// path must keep working exactly as it did before RESPONSE_STREAM existed.
+// Only once that's ruled out does invoke mode matter: fn declared
+// RESPONSE_STREAM (see invokeMode) gets event.ToHTTPStream first — a framed
+// response is parsed into its real status code, headers, cookies, and body.
+// A non-framed payload (event.ErrNotFramed) falls back to the ordinary
+// event.ToHTTP path below, so a buffered handler that's merely declared
+// streaming still behaves. A function declared BUFFERED (the default) or
+// with no manifest at all goes straight to event.ToHTTP, same as before
+// invoke mode existed.
 func (rt *Router) handleRouteV2(w http.ResponseWriter, r *http.Request, fn discovery.Function) {
 	ev, err := event.FromHTTP(r, fn.Route)
 	if err != nil {
@@ -415,6 +434,22 @@ func (rt *Router) handleRouteV2(w http.ResponseWriter, r *http.Request, fn disco
 			"error":   errorPayload(respBody),
 		})
 		return
+	}
+
+	if invokeMode(fn) == invokeModeResponseStream {
+		err := event.ToHTTPStream(w, respBody)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, event.ErrNotFramed) {
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"message": fmt.Sprintf("malformed function response: %s", err),
+			})
+			return
+		}
+		// Not a frame: fall through to the buffered path below, per
+		// event.ErrNotFramed's own doc comment. ToHTTPStream is
+		// guaranteed to have written nothing to w in this case.
 	}
 
 	if err := event.ToHTTP(w, respBody); err != nil {
@@ -482,6 +517,18 @@ func payloadVersion(fn discovery.Function) string {
 	}
 
 	return fn.Manifest.URL.Payload
+}
+
+// invokeMode returns fn's configured Function URL invoke mode
+// (Manifest.URL.InvokeMode), or "" when fn has no manifest at all — same
+// nil-Manifest handling as payloadVersion, since both mean "use the
+// default" (manifest.DefaultInvokeMode, "BUFFERED").
+func invokeMode(fn discovery.Function) string {
+	if fn.Manifest == nil {
+		return ""
+	}
+
+	return fn.Manifest.URL.InvokeMode
 }
 
 // isFunctionError reports whether an invoke's raw HTTP status/body
