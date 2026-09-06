@@ -1,0 +1,5 @@
+runtime: nodejs22.x
+handler: handler.handler
+timeout: 120
+url:
+  invoke_mode: RESPONSE_STREAM
