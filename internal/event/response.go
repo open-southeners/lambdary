@@ -95,13 +95,32 @@ func writeShaped(w http.ResponseWriter, statusCode int, resp shapedResponse) err
 		body = decoded
 	}
 
-	if !hasContentType(resp.Headers) {
-		w.Header().Set("Content-Type", "application/json")
+	return writeHeadersStatusBody(w, statusCode, resp.Headers, resp.Cookies, body, "application/json")
+}
+
+// writeHeadersStatusBody is the tail shared by writeShaped and stream.go's
+// ToHTTPStream: it sets headers (defaulting Content-Type to
+// defaultContentType when headers doesn't supply its own), adds one
+// Set-Cookie per entry in cookies, writes statusCode, and — if body is
+// non-empty — writes body. The two callers differ only in what an absent
+// Content-Type should mean (a JSON-shaped response defaults to
+// "application/json"; a streamed body is arbitrary bytes and defaults to
+// "application/octet-stream"), so that choice is a parameter rather than
+// logic duplicated in both places.
+//
+// The len(body) > 0 guard matters on its own: calling w.Write with a
+// zero-length slice is harmless, but skipping the call entirely is what
+// keeps a body-less status (e.g. 204, or a shaped response with no "body")
+// legal under Go 1.26's stricter net/http body-on-empty-status handling —
+// see CHANGELOG.md's 1.0.1 entry.
+func writeHeadersStatusBody(w http.ResponseWriter, statusCode int, headers map[string]string, cookies []string, body []byte, defaultContentType string) error {
+	if !hasContentType(headers) {
+		w.Header().Set("Content-Type", defaultContentType)
 	}
-	for k, v := range resp.Headers {
+	for k, v := range headers {
 		w.Header().Set(k, v)
 	}
-	for _, cookie := range resp.Cookies {
+	for _, cookie := range cookies {
 		w.Header().Add("Set-Cookie", cookie)
 	}
 
