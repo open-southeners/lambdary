@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-06
+
 ### Added
 
 - **Lambda layers**: a `layers:` manifest key accepting layer version ARNs
