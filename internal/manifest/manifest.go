@@ -19,6 +19,13 @@ import (
 // method's doc comment for the intended layering order.
 const DefaultPayload = "2.0"
 
+// DefaultInvokeMode is the Function URL invoke mode assumed when a
+// manifest sets url.path but not url.invoke_mode, mirroring AWS's own
+// Function URL default. It is filled in by (*Manifest).ApplyBuiltinDefaults,
+// not Load — see that method's doc comment for the intended layering
+// order.
+const DefaultInvokeMode = "BUFFERED"
+
 // Errors returned by Manifest and Defaults validation. They are wrapped
 // with the offending file path and value by Load, so callers can match on
 // them with errors.Is.
@@ -33,6 +40,16 @@ var (
 	// ErrInvalidURLPath indicates url.path is set but does not start
 	// with "/".
 	ErrInvalidURLPath = errors.New(`url.path must start with "/"`)
+	// ErrInvalidInvokeMode indicates url.invoke_mode is set to a value
+	// other than "", "BUFFERED", or "RESPONSE_STREAM".
+	ErrInvalidInvokeMode = errors.New(`url.invoke_mode must be one of "", "BUFFERED", or "RESPONSE_STREAM"`)
+	// ErrStreamingPayloadV1 indicates url.invoke_mode is "RESPONSE_STREAM"
+	// together with url.payload "1.0". RESPONSE_STREAM is a Function URL
+	// feature; API Gateway REST payload 1.0 has no equivalent, so the
+	// combination is rejected as a manifest error rather than silently
+	// falling back to buffered behaviour — see
+	// plans/response-streaming.md's Unit B.
+	ErrStreamingPayloadV1 = errors.New(`url.invoke_mode "RESPONSE_STREAM" is not supported with url.payload "1.0"`)
 )
 
 // Manifest is the parsed and validated content of a function's
@@ -90,6 +107,17 @@ type URL struct {
 	// Gateway mapping; defaults to DefaultPayload ("2.0") when unset, via
 	// (*Manifest).ApplyBuiltinDefaults.
 	Payload string `yaml:"payload,omitempty"`
+	// InvokeMode is the Function URL invoke mode: "BUFFERED" (the
+	// default) or "RESPONSE_STREAM", mirroring AWS's own Function URL
+	// InvokeMode configuration. RESPONSE_STREAM makes the router parse a
+	// streaming handler's http-integration-response frame (see
+	// internal/event's SplitFrame/ToHTTPStream) into the real status
+	// code, headers, and cookies the handler set via
+	// awslambda.HttpResponseStream.from(), instead of leaking the raw
+	// frame bytes into the body. Defaults to DefaultInvokeMode
+	// ("BUFFERED") when unset, via (*Manifest).ApplyBuiltinDefaults.
+	// Only valid with Payload "2.0" or unset — see ErrStreamingPayloadV1.
+	InvokeMode string `yaml:"invoke_mode,omitempty"`
 }
 
 // Local holds the one section of the manifest that goes beyond AWS's own
@@ -134,6 +162,9 @@ func (m *Manifest) ApplyBuiltinDefaults() {
 	if m.URL.Payload == "" {
 		m.URL.Payload = DefaultPayload
 	}
+	if m.URL.InvokeMode == "" {
+		m.URL.InvokeMode = DefaultInvokeMode
+	}
 }
 
 // decodeFile opens path and decodes its YAML content into v, rejecting
@@ -156,9 +187,9 @@ func decodeFile(path string, v any) error {
 }
 
 // validateCommon applies the validation rules shared by Manifest and
-// Config's defaults block: local.backend, timeout, memory, url.path, and
-// layers. Callers add file-path and document-kind context to the returned
-// error.
+// Config's defaults block: local.backend, timeout, memory, url.path,
+// url.invoke_mode, and layers. Callers add file-path and document-kind
+// context to the returned error.
 func validateCommon(timeout, memory int, url URL, local Local, layers []string) error {
 	switch local.Backend {
 	case "", "auto", "container", "process":
@@ -176,6 +207,16 @@ func validateCommon(timeout, memory int, url URL, local Local, layers []string) 
 
 	if url.Path != "" && !strings.HasPrefix(url.Path, "/") {
 		return fmt.Errorf("%w: got %q", ErrInvalidURLPath, url.Path)
+	}
+
+	switch url.InvokeMode {
+	case "", "BUFFERED", "RESPONSE_STREAM":
+	default:
+		return fmt.Errorf("%w: got %q", ErrInvalidInvokeMode, url.InvokeMode)
+	}
+
+	if url.InvokeMode == "RESPONSE_STREAM" && url.Payload == "1.0" {
+		return fmt.Errorf("%w: got %q", ErrStreamingPayloadV1, url.Payload)
 	}
 
 	if err := validateLayers(layers); err != nil {

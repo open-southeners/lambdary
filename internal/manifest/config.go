@@ -131,6 +131,9 @@ func (c *Config) ApplyDefaults(m *Manifest) {
 	if m.URL.Payload == "" {
 		m.URL.Payload = d.URL.Payload
 	}
+	if m.URL.InvokeMode == "" {
+		m.URL.InvokeMode = d.URL.InvokeMode
+	}
 	if m.Local.Backend == "" {
 		m.Local.Backend = d.Local.Backend
 	}

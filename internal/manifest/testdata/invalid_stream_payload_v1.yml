@@ -1,0 +1,4 @@
+name: function_a
+url:
+  payload: "1.0"
+  invoke_mode: RESPONSE_STREAM

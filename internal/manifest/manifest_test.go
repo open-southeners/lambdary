@@ -24,7 +24,7 @@ func TestLoad(t *testing.T) {
 			Architectures: []string{"arm64"},
 			Layers:        []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1", "../shared-layer"},
 			Environment:   map[string]string{"TABLE_NAME": "local-table"},
-			URL:           URL{Path: "/function_a", Payload: "2.0"},
+			URL:           URL{Path: "/function_a", Payload: "2.0", InvokeMode: "RESPONSE_STREAM"},
 			Local: Local{
 				Backend: "auto",
 				Image:   "my-custom-image:latest",
@@ -47,6 +47,17 @@ func TestLoad(t *testing.T) {
 		want := &Manifest{}
 		if !reflect.DeepEqual(m, want) {
 			t.Errorf("Load() = %#v, want %#v", m, want)
+		}
+	})
+
+	t.Run("invoke_mode parses", func(t *testing.T) {
+		m, err := Load("testdata/invoke_mode.yml")
+		if err != nil {
+			t.Fatalf("Load() unexpected error: %v", err)
+		}
+
+		if m.URL.InvokeMode != "RESPONSE_STREAM" {
+			t.Errorf("URL.InvokeMode = %q, want %q", m.URL.InvokeMode, "RESPONSE_STREAM")
 		}
 	})
 
@@ -88,6 +99,8 @@ func TestLoad(t *testing.T) {
 		{"negative timeout", "testdata/invalid_timeout.yml", ErrInvalidTimeout},
 		{"negative memory", "testdata/invalid_memory.yml", ErrInvalidMemory},
 		{"url path without leading slash", "testdata/invalid_url_path.yml", ErrInvalidURLPath},
+		{"invalid invoke_mode", "testdata/invalid_invoke_mode.yml", ErrInvalidInvokeMode},
+		{"invoke_mode RESPONSE_STREAM with payload 1.0", "testdata/invalid_stream_payload_v1.yml", ErrStreamingPayloadV1},
 		{"more than 5 layers", "testdata/invalid_layers_too_many.yml", ErrInvalidLayers},
 		{"empty layers entry", "testdata/invalid_layers_empty_entry.yml", ErrInvalidLayers},
 		{"versionless layer ARN", "testdata/invalid_layers_arn.yml", ErrInvalidLayers},
@@ -133,6 +146,24 @@ func TestManifestApplyBuiltinDefaults(t *testing.T) {
 
 		if m.URL.Payload != "1.0" {
 			t.Errorf("URL.Payload = %q, want %q", m.URL.Payload, "1.0")
+		}
+	})
+
+	t.Run("fills empty invoke mode", func(t *testing.T) {
+		m := &Manifest{Name: "function_a"}
+		m.ApplyBuiltinDefaults()
+
+		if m.URL.InvokeMode != DefaultInvokeMode {
+			t.Errorf("URL.InvokeMode = %q, want %q", m.URL.InvokeMode, DefaultInvokeMode)
+		}
+	})
+
+	t.Run("explicit invoke mode survives", func(t *testing.T) {
+		m := &Manifest{Name: "function_a", URL: URL{InvokeMode: "RESPONSE_STREAM"}}
+		m.ApplyBuiltinDefaults()
+
+		if m.URL.InvokeMode != "RESPONSE_STREAM" {
+			t.Errorf("URL.InvokeMode = %q, want %q", m.URL.InvokeMode, "RESPONSE_STREAM")
 		}
 	})
 }

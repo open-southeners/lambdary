@@ -12,6 +12,7 @@ environment:
 url:
   path: /function_a
   payload: "2.0"
+  invoke_mode: RESPONSE_STREAM
 local:
   backend: auto
   image: my-custom-image:latest
