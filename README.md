@@ -102,6 +102,7 @@ environment:
 url:
   path: /api              # local route, default /<name>
   payload: "2.0"          # event format (Function URL / API Gateway v2)
+  invoke_mode: BUFFERED   # or RESPONSE_STREAM; parses a streamifyResponse frame into real status/headers/cookies
 layers:                   # up to 5, merged into /opt in order (later entries win)
   - arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1  # a layer version ARN (e.g. Bref's PHP layer)
   - ../shared-layer        # a local directory or .zip, relative to the function dir
@@ -160,6 +161,11 @@ Unknown keys in either file are rejected, so typos surface immediately.
   instead of the `"2.0"` default; a function with a `Dockerfile` and no
   `runtime`/`local.image` is built automatically (via `docker build`) on
   every start, including hot reload.
+- `url.invoke_mode: RESPONSE_STREAM` parses a `streamifyResponse` handler's
+  `http-integration-response` frame into its real status code, headers, and
+  cookies instead of leaking the frame into the body — but the response is
+  still buffered by the emulator end to end, so there's no
+  time-to-first-byte benefit locally, only a correct one-shot response.
 - `.lambdary/lock` pins the container backend's image digests on first
   start — commit it alongside your functions for reproducible starts across
   machines.

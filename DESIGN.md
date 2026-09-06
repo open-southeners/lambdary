@@ -24,7 +24,11 @@ support outside WSL, emulating Lambda orchestration (throttling, scaling,
 IAM), X-Ray, layers, extensions. *(Amended post-v0: layers are now in
 scope — see the "Layers" section. Extensions remain out of scope as a
 feature, though extension-bearing layers may work incidentally; see the
-same section.)*
+same section. Response streaming is now partially in scope: frame-aware
+responses — mapping a `streamifyResponse` handler's response frame onto a
+real status code, headers, and cookies — are emulated; incremental
+delivery, i.e. an actual time-to-first-byte win, remains out of scope; see
+the "Response streaming" section.)*
 
 ## Background: how Lambda invocation works locally
 
@@ -143,6 +147,7 @@ environment:
 url:
   path: /function_a         # route prefix; default: /{name}
   payload: "2.0"            # event format: Function URL / API GW v2 (default)
+  invoke_mode: BUFFERED     # or RESPONSE_STREAM; frame-aware only, see "Response streaming"
 
 # Local-dev-only section (the one place we go beyond AWS vocabulary)
 local:
@@ -286,6 +291,47 @@ feature**: the RIE exposes the Extensions API surface, so they may work in
 the container backend incidentally, but Lambdary makes no lifecycle
 guarantees until a dedicated verification spike says otherwise.
 
+## Response streaming (post-v0)
+
+Design principle: **response shape and delivery timing are separable
+capabilities, and only the first is reachable with the pinned RIE as-is.**
+A Node handler wrapped in `awslambda.streamifyResponse` still runs its whole
+invocation to completion behind the RIE's ordinary buffered invoke endpoint
+(`POST /2015-03-31/functions/function/invocations`); it just frames its
+result as `application/vnd.awslambda.http-integration-response` — a JSON
+prelude (`statusCode`, `headers`, `cookies`), an eight-NUL-byte delimiter,
+then the body — instead of the plain shaped JSON object a buffered handler
+returns.
+
+1. **Frame-aware responses** — parse that frame and map the prelude onto a
+   real HTTP status code, headers, and cookies, writing the body after.
+   Self-contained: no architectural change, and it works with the pinned
+   RIE unmodified, since the whole frame still arrives in one piece.
+2. **Incremental delivery** — bytes reaching the caller as the function
+   writes them, i.e. an actual time-to-first-byte win.
+
+Only (1) is implemented. The RIE buffers the entire invocation before
+responding on the endpoint Lambdary uses, so (2) can't be reached by parsing
+alone — it needs a streaming invoke endpoint upstream (unconfirmed against
+the pinned RIE tag) plus rewriting the invoke path off `[]byte` end to end:
+`doInvoke` returning an `io.ReadCloser` rather than a fully-read body, the
+per-instance invoke lock held until the body drains instead of until
+`doInvoke` returns, a committed-response guard disabling the transparent
+retry in `(*Router).invoke` once bytes are on the wire, and `http.Flusher`
+use, which the router has none of today. That's a milestone of its own —
+see the "Deferred: incremental delivery" section of
+`plans/response-streaming.md`.
+
+`url.invoke_mode: RESPONSE_STREAM` (AWS's own Function URL vocabulary — see
+the `.lambda.yml` spec above) opts a function's route into (1):
+`handleRouteV2` tries `event.ToHTTPStream` first and falls back to
+`event.ToHTTP` when the payload isn't actually framed, so a buffered
+handler that's merely declared streaming still behaves correctly.
+`isFunctionError` still runs first and unconditionally either way, so the
+502 function-error envelope is unchanged. `RESPONSE_STREAM` has no API
+Gateway REST (`payload: "1.0"`) equivalent, so declaring both is a manifest
+validation error rather than a silent no-op.
+
 ## Routing & event mapping
 
 - `ANY /{function_path}/*` → build a **Lambda Function URL / API Gateway v2
@@ -396,3 +442,17 @@ can come later if we need event streams.
   any request hitting a colliding path gets an error response (`409`) that
   names the functions competing for that route so the user is notified
   exactly where they'd notice it.
+- **Response streaming:** split into two capabilities — frame-aware
+  responses (mapping a `streamifyResponse` handler's
+  `http-integration-response` frame onto real status/headers/cookies) and
+  incremental delivery (an actual time-to-first-byte win). Only the former
+  is implemented: the RIE buffers the whole invocation before responding on
+  the endpoint Lambdary uses, so the latter needs a streaming invoke
+  endpoint upstream (unconfirmed against the pinned RIE tag) plus a rewrite
+  of the invoke path off `[]byte`. `url.invoke_mode` is explicit
+  configuration rather than content-type sniffing: RIE labels the framed
+  response `application/octet-stream`, not `vnd.awslambda.*`, so sniffing
+  would be guesswork against an undocumented upstream detail, and real
+  Lambda itself treats invoke mode as function configuration, not something
+  inferred per response. See the "Response streaming" section and
+  `plans/response-streaming.md`.
