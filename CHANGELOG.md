@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `RUBYLIB`/`GEM_PATH`, `PATH`); a function whose layer content must run on
   Amazon Linux falls back to the container backend automatically, with a
   notice.
+- **Response streaming** (`url.invoke_mode: RESPONSE_STREAM`): a function
+  wrapped in `awslambda.streamifyResponse` now gets its real HTTP status
+  code, headers, and cookies back on its local route, instead of the raw
+  `http-integration-response` frame — JSON prelude, NUL-byte delimiter, and
+  all — leaking straight through as the body. This is a correctness fix as
+  much as a new capability: anyone already testing a streaming handler
+  locally was silently getting that wrong response with no diagnostic. The
+  response is still fully buffered by the emulator end to end, so this
+  doesn't add time-to-first-byte streaming locally — only a correct
+  one-shot response.
 
 ## [1.0.1] - 2026-08-18
 
