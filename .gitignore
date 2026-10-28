@@ -1,5 +1,8 @@
 /lambdary
 
+# Local planning notes
+/.claude/plans/
+
 # .lambdary/ holds per-project local state (RIE cache, etc.) — ignored
 # except the lock file, which is meant to be committed for reproducible
 # digest pinning (DESIGN.md's version-pinning decision). A trailing-slash
