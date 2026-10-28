@@ -26,6 +26,7 @@ import (
 
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/gobuild"
 	"github.com/open-southeners/lambdary/internal/layers"
 	"github.com/open-southeners/lambdary/internal/manifest"
 )
@@ -154,6 +155,29 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 	// with no `layers:` configured (staging == "") behaves exactly as
 	// before this search order existed.
 	bootstrapSrc := filepath.Join(absDir, "bootstrap")
+
+	// A Go function's bootstrap is built fresh on every Start (so a
+	// restart after a code edit picks the edit up) for linux on the
+	// function's architecture, and always wins over any bootstrap file
+	// sitting in its directory: it is what the source says now.
+	if fn.Go != nil && !dockerfileFn {
+		var m manifest.Manifest
+		if fn.Manifest != nil {
+			m = *fn.Manifest
+		}
+
+		goarch := gobuild.ArchFor(m.Architectures)
+		out := gobuild.OutputPath(b.cacheDir, fn.Name, "linux", goarch)
+
+		if err := gobuild.Build(ctx, b.runner, *fn.Go, "linux", goarch, out); err != nil {
+			return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
+		}
+
+		bootstrapSrc, err = filepath.Abs(out)
+		if err != nil {
+			return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
+		}
+	}
 
 	if strings.HasPrefix(fn.Runtime, "provided.") {
 		if _, err := os.Stat(bootstrapSrc); err != nil {
