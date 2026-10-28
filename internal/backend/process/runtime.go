@@ -118,8 +118,12 @@ func Supports(fn discovery.Function) bool {
 // generic "no process-backend shim" message — nodejs/python/ruby runtimes
 // truly have no host-runnable equivalent, but a provided.* function with
 // layers does, once it lands in a container.
+//
+// A Go function (fn.Go set) never qualifies: Start builds its bootstrap
+// for the host, so a missing ./bootstrap file says nothing about where
+// the bootstrap comes from.
 func RequiresLayerBootstrap(fn discovery.Function) bool {
-	return strings.HasPrefix(fn.Runtime, providedRuntimePrefix) && hasLayers(fn.Manifest) && !hasExecutableBootstrap(fn.Dir)
+	return fn.Go == nil && strings.HasPrefix(fn.Runtime, providedRuntimePrefix) && hasLayers(fn.Manifest) && !hasExecutableBootstrap(fn.Dir)
 }
 
 // hasLayers reports whether m configures any layers: entries. A nil
