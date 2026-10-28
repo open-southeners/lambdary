@@ -120,10 +120,37 @@ always wins.
 | `package.json` | `nodejs22.x` |
 | `composer.json` | `provided.al2023` (custom runtime; a `bootstrap` file is expected — Bref projects satisfy this out of the box, but Lambdary has no Bref-specific logic) |
 | `pyproject.toml` / `requirements.txt` | `python3.13` |
-| `go.mod` | `provided.al2023` (compiled bootstrap) |
+| `go.mod` | `provided.al2023` (bootstrap built from the module on every start) |
 | `Gemfile` | `ruby3.3` |
 | `*.csproj` | `dotnet8` |
 | `Dockerfile` | container backend with that image, as-is |
+
+### Explicit function list (post-v0)
+
+`lambdary.yml` may list functions under `functions:` instead of relying on the
+scan; when it does, only those functions exist. Each entry names exactly one
+source — `path:` (a function directory, handled like a scanned one) or `go:`
+(a Go main package inside a module whose `go.mod` sits at or above it) — plus
+any `.lambda.yml` keys inline. Precedence, highest first: inline entry, the
+directory's own `.lambda.yml`, `defaults:`, detection, built-ins; a `go:`
+entry's `provided.al2023` runtime and `bootstrap` handler sit above
+`defaults:`, since the entry kind states what the function is. This exists
+for one module with many `cmd/<name>` functions, which no directory scan can
+express.
+
+### Go builds (post-v0)
+
+Go functions (a `go:` entry, or a scanned `provided.*` directory with a
+`go.mod`) are built by the backend on every `Start`:
+`CGO_ENABLED=0 GOOS=… GOARCH=… go -C <module> build -tags lambda.norpc[,…] [-ldflags …] -o <out> <pkg>`,
+with tags and ldflags from `lambdary.yml`'s `build.go`. The container backend
+targets Linux on `architectures[0]` and mounts the result as
+`/var/runtime/bootstrap`; the process backend targets the host and runs it
+directly. Output lives under `.lambdary/build/<fn>/<os>_<arch>/`, outside the
+watched source tree. Building on `Start` reuses the existing restart-on-change
+hot reload; the watcher additionally maps a Go source change outside any
+function's own directory to every function of that module. Building needs a
+host Go toolchain.
 
 ## `.lambda.yml` spec (v0)
 

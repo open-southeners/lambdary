@@ -20,7 +20,9 @@ Every direct subdirectory of your project root that contains a `.lambda.yml`
 or a recognizable project file (`package.json`, `composer.json`,
 `pyproject.toml`/`requirements.txt`, `go.mod`, `Gemfile`, `*.csproj`,
 `Dockerfile`) is a function. Its directory name becomes its name and its
-local route.
+local route. Layouts a directory scan can't express, such as one Go module
+with many `cmd/<name>` functions, can list their functions explicitly instead
+(see [Go functions](#go-functions)).
 
 Requests to `http://localhost:8000/<function>/...` arrive in your handler as
 real **AWS Lambda Function URL / API Gateway v2 events** — headers, cookies,
@@ -139,6 +141,43 @@ defaults:                 # inherited by functions that don't set them
 ```
 
 Unknown keys in either file are rejected, so typos surface immediately.
+
+### Go functions
+
+A Go function needs no hand-built `bootstrap`. Lambdary builds it with
+`go build -tags lambda.norpc` every time the function starts, so hot reload
+rebuilds it too, and Go's build cache keeps an unchanged rebuild quick. The
+container backend builds for Linux on the function's `architectures`, and the
+process backend builds for your host. Binaries go to `.lambdary/build/`, never
+into your source tree. You need `go` on your `PATH`.
+
+A function directory with a `go.mod` and a `provided.*` runtime is built this
+way (a `Dockerfile` function still builds from its `Dockerfile`). For one
+module holding many functions, list them in `lambdary.yml`:
+
+```yaml
+functions:                # replaces the directory scan when set
+  ping:
+    go: ./cmd/ping        # a Go main package, relative to root
+  notify:
+    go: ./cmd/notify
+    timeout: 30           # any .lambda.yml key, inline
+    url:
+      path: /hooks/notify
+  legacy:
+    path: ./legacy-node   # an ordinary function directory
+build:
+  go:
+    tags: [netgo]         # added after lambda.norpc
+    ldflags: "-X main.version=dev"
+```
+
+Each entry sets exactly one of `go` or `path`, and the key is the function's
+name. Inline settings win over a `.lambda.yml` in that directory, which wins
+over `defaults:`. A `go:` entry runs on `provided.al2023` unless the entry or
+its `.lambda.yml` says otherwise. Editing a function's own package reloads
+that function; editing shared code elsewhere in the module (or `go.mod` /
+`go.sum`) reloads every function built from it.
 
 ## Notes and limitations
 

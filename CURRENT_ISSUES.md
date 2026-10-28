@@ -71,17 +71,25 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   consuming it; alternatively drop the command from DESIGN if `dev`'s inline
   streaming is deemed sufficient.
 
-## Compiled non-Dockerfile runtimes are not built before container start (DESIGN gap)
+## .NET functions are not built before container start (DESIGN gap)
 
 - **Where:** `internal/backend/container`.
-- **What:** DESIGN's "compiled ones rebuild the artifact first" only happens
-  for `Dockerfile` functions (`docker build` each start). A bare `go.mod`
-  (`provided.al2023`) or `*.csproj` (`dotnet8`) function has no
-  compile-the-artifact step — the container just runs whatever binary the
-  developer last built by hand.
-- **Fix:** per-runtime build hooks (e.g. `go build -o bootstrap` in-container
-  or on host) before start/restart, or document that compiled runtimes
-  require a `Dockerfile` or a manual build step.
+- **What:** DESIGN's "compiled ones rebuild the artifact first" now holds for
+  `Dockerfile` functions and Go functions (`internal/gobuild`, run on every
+  backend start), but a bare `*.csproj` (`dotnet8`) function still has no
+  compile-the-artifact step — the container runs whatever the developer last
+  published by hand.
+- **Fix:** a `dotnet publish` hook alongside `internal/gobuild`, or document
+  that .NET functions need a `Dockerfile` or a manual publish.
+
+## Go builds need a host Go toolchain
+
+- **Where:** `internal/gobuild` (`Build`).
+- **What:** Go functions are built with the host's `go` for both backends;
+  with no `go` on `PATH`, every Go function fails to start (the error names
+  the failed `env … go build` command).
+- **Fix:** fall back to building inside a `golang` container when the
+  container backend is in use and the host has no toolchain.
 
 ## Merged manifest defaults are never re-validated
 
