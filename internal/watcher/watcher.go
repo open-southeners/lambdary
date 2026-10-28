@@ -86,6 +86,8 @@ func Watch(ctx context.Context, root string, fns []discovery.Function) (<-chan E
 	}
 
 	fnDirs := make(map[string]string, len(fns))
+	modules := make(map[string][]string)
+
 	for _, fn := range fns {
 		dir := filepath.Clean(fn.Dir)
 		fnDirs[dir] = fn.Name
@@ -94,11 +96,26 @@ func Watch(ctx context.Context, root string, fns []discovery.Function) (<-chan E
 			fsw.Close()
 			return nil, fmt.Errorf("watcher: %s: %w", dir, err)
 		}
+
+		if fn.Go == nil {
+			continue
+		}
+
+		// A Go function also depends on the rest of its module (shared
+		// packages, go.mod/go.sum), which may live outside its own dir.
+		modDir := filepath.Clean(fn.Go.ModuleDir)
+		if _, seen := modules[modDir]; !seen {
+			if err := addTree(fsw, modDir); err != nil {
+				fsw.Close()
+				return nil, fmt.Errorf("watcher: %s: %w", modDir, err)
+			}
+		}
+		modules[modDir] = append(modules[modDir], fn.Name)
 	}
 
 	out := make(chan Event, 8)
 
-	go run(ctx, fsw, root, fnDirs, rootChildren, out)
+	go run(ctx, fsw, root, fnDirs, modules, rootChildren, out)
 
 	return out, nil
 }
@@ -151,8 +168,8 @@ func addTree(fsw *fsnotify.Watcher, dir string) error {
 // function subdirectories appear, and debounces classified events into
 // Events on out. Everything here runs on a single goroutine, so the
 // debounce state (pending, timer) needs no locking and can never race with
-// itself.
-func run(ctx context.Context, fsw *fsnotify.Watcher, root string, fnDirs map[string]string, rootChildren map[string]bool, out chan<- Event) {
+// itself. modules maps each Go module dir to the functions built from it.
+func run(ctx context.Context, fsw *fsnotify.Watcher, root string, fnDirs map[string]string, modules map[string][]string, rootChildren map[string]bool, out chan<- Event) {
 	defer close(out)
 	defer fsw.Close()
 
@@ -177,15 +194,20 @@ func run(ctx context.Context, fsw *fsnotify.Watcher, root string, fnDirs map[str
 			}
 
 			if ev.Op.Has(fsnotify.Create) {
-				addCreatedDir(fsw, ev.Name, root, fnDirs)
+				addCreatedDir(fsw, ev.Name, root, fnDirs, modules)
 			}
 
-			structural, fn, ignore := classify(ev, root, fnDirs, rootChildren)
+			structural, changed, ignore := classify(ev, root, fnDirs, modules, rootChildren)
 			if ignore {
 				continue
 			}
 
-			pending.add(structural, fn, ev.Name)
+			if structural {
+				pending.add(true, "", ev.Name)
+			}
+			for _, fn := range changed {
+				pending.add(false, fn, ev.Name)
+			}
 
 			if timer == nil {
 				timer = time.NewTimer(debounceWindow)
@@ -224,8 +246,10 @@ func run(ctx context.Context, fsw *fsnotify.Watcher, root string, fnDirs map[str
 // Structural events that a caller is expected to react to by re-resolving
 // and calling Watch again with the updated function list. A newly created
 // ignored dir (node_modules, __pycache__, ...) is skipped rather than
-// watched, matching addTree's initial-registration behavior.
-func addCreatedDir(fsw *fsnotify.Watcher, path, root string, fnDirs map[string]string) {
+// watched, matching addTree's initial-registration behavior. A new
+// directory inside a Go function's module is watched too, since a shared
+// package created there feeds that module's builds.
+func addCreatedDir(fsw *fsnotify.Watcher, path, root string, fnDirs map[string]string, modules map[string][]string) {
 	path = filepath.Clean(path)
 
 	if filepath.Dir(path) == root {
@@ -236,7 +260,8 @@ func addCreatedDir(fsw *fsnotify.Watcher, path, root string, fnDirs map[string]s
 		return
 	}
 
-	if _, ok := underFunctionDir(path, fnDirs); !ok {
+	_, inFn := underFunctionDir(path, fnDirs)
+	if !inFn && underModule(path, modules) == nil {
 		return
 	}
 
@@ -249,8 +274,9 @@ func addCreatedDir(fsw *fsnotify.Watcher, path, root string, fnDirs map[string]s
 }
 
 // classify determines whether ev represents a structural change, a code
-// change for a known function, or noise to ignore.
-func classify(ev fsnotify.Event, root string, fnDirs map[string]string, rootChildren map[string]bool) (structural bool, fn string, ignore bool) {
+// change for known functions (fns: one function, or every function of a Go
+// module whose shared code changed), or noise to ignore.
+func classify(ev fsnotify.Event, root string, fnDirs map[string]string, modules map[string][]string, rootChildren map[string]bool) (structural bool, fns []string, ignore bool) {
 	path := filepath.Clean(ev.Name)
 	base := filepath.Base(path)
 
@@ -258,35 +284,82 @@ func classify(ev fsnotify.Event, root string, fnDirs map[string]string, rootChil
 	// (including the manifest check below), since nothing inside them —
 	// however named — is a meaningful project change.
 	if inIgnoredDir(path) {
-		return false, "", true
+		return false, nil, true
 	}
 
 	if isEditorNoise(base) {
-		return false, "", true
+		return false, nil, true
 	}
 
 	// The manifest and root config checks run before the dotfile ignore
 	// below, since .lambda.yml is itself a dotfile.
 	if base == manifestFileName {
-		return true, "", false
+		return true, nil, false
 	}
 	if base == rootConfigFileName && filepath.Dir(path) == root {
-		return true, "", false
+		return true, nil, false
 	}
 
 	if strings.HasPrefix(base, ".") {
-		return false, "", true
+		return false, nil, true
+	}
+
+	// A path inside a function's own directory belongs to that function
+	// alone. Checked before the root-child rule only when it is a
+	// function's subtree, so root-level directory adds/removes stay
+	// structural.
+	name, inFn := underFunctionDir(path, fnDirs)
+
+	if inFn && filepath.Dir(path) != root {
+		return false, []string{name}, false
+	}
+
+	// Go source elsewhere in a module (a shared package, go.mod, go.sum
+	// — possibly directly in root, when root is the module) feeds every
+	// function built from it.
+	if isGoSource(base) {
+		if names := underModule(path, modules); names != nil {
+			return false, names, false
+		}
 	}
 
 	if filepath.Dir(path) == root {
-		return classifyRootChild(ev, path, rootChildren)
+		structural, fn, ignore := classifyRootChild(ev, path, rootChildren)
+		if fn != "" {
+			return structural, []string{fn}, ignore
+		}
+		return structural, nil, ignore
 	}
 
-	if name, ok := underFunctionDir(path, fnDirs); ok {
-		return false, name, false
+	if inFn {
+		return false, []string{name}, false
 	}
 
-	return false, "", true
+	return false, nil, true
+}
+
+// isGoSource reports whether base names a file that changes a Go module's
+// build output.
+func isGoSource(base string) bool {
+	return strings.HasSuffix(base, ".go") || base == "go.mod" || base == "go.sum"
+}
+
+// underModule returns the functions built from the Go module containing
+// path, or nil when path is in none. With nested modules the innermost
+// one wins, as it does for the go command.
+func underModule(path string, modules map[string][]string) []string {
+	best := ""
+	for dir := range modules {
+		if (path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))) && len(dir) > len(best) {
+			best = dir
+		}
+	}
+
+	if best == "" {
+		return nil
+	}
+
+	return modules[best]
 }
 
 // classifyRootChild classifies an event whose path is a direct child of
@@ -316,14 +389,17 @@ func classifyRootChild(ev fsnotify.Event, path string, rootChildren map[string]b
 }
 
 // underFunctionDir reports whether path is inside (or is) one of fnDirs'
-// directories, returning that function's name.
+// directories, returning that function's name. When function dirs nest
+// (a Go module root that is itself a function, holding cmd/<name>
+// functions), the innermost dir wins.
 func underFunctionDir(path string, fnDirs map[string]string) (string, bool) {
+	best, bestName := "", ""
 	for dir, name := range fnDirs {
-		if path == dir || strings.HasPrefix(path, dir+string(filepath.Separator)) {
-			return name, true
+		if (path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))) && len(dir) > len(best) {
+			best, bestName = dir, name
 		}
 	}
-	return "", false
+	return bestName, best != ""
 }
 
 // ignoredDirNames are well-known build/cache directory names whose entire
