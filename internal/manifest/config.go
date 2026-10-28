@@ -3,6 +3,8 @@ package manifest
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 )
 
 // DefaultPort is the local HTTP server port assumed when lambdary.yml
@@ -13,8 +15,20 @@ const DefaultPort = 8000
 // omits root.
 const DefaultRoot = "."
 
-// ErrInvalidPort indicates port is set outside the valid TCP port range.
-var ErrInvalidPort = errors.New("port must be between 1 and 65535")
+// Errors returned by Config validation, wrapped with the config file path
+// and the offending value.
+var (
+	// ErrInvalidPort indicates port is set outside the valid TCP port
+	// range.
+	ErrInvalidPort = errors.New("port must be between 1 and 65535")
+	// ErrFunctionSource indicates a functions entry sets neither or both
+	// of path and go.
+	ErrFunctionSource = errors.New("exactly one of path or go must be set")
+	// ErrFunctionName indicates a functions entry has an unusable name:
+	// an empty key, a key with "/" or whitespace, or an inline name field
+	// (the map key already is the function name).
+	ErrFunctionName = errors.New("function name must be a non-empty map key without \"/\" or whitespace, and entries must not set name")
+)
 
 // Config is the parsed and validated content of a project's optional
 // root-level lambdary.yml file.
@@ -28,6 +42,43 @@ type Config struct {
 	// Defaults holds per-project defaults inherited by function
 	// manifests that don't set the corresponding field.
 	Defaults Defaults `yaml:"defaults,omitempty"`
+	// Functions, when set, lists the project's functions explicitly by
+	// name instead of discovering them from Root's subdirectories — for
+	// layouts a directory scan can't express, such as one Go module
+	// holding many cmd/<name> functions.
+	Functions map[string]FunctionEntry `yaml:"functions,omitempty"`
+	// Build holds project-wide build settings for compiled functions.
+	Build Build `yaml:"build,omitempty"`
+}
+
+// FunctionEntry is one function in Config.Functions. Exactly one of Path
+// and Go is set; the remaining fields are the function's own manifest
+// settings, written inline and taking precedence over a `.lambda.yml` in
+// the function's directory.
+type FunctionEntry struct {
+	// Path is a function directory, relative to the functions root,
+	// handled like a discovered one.
+	Path string `yaml:"path,omitempty"`
+	// Go is a Go main package directory, relative to the functions root,
+	// built into the function's bootstrap.
+	Go string `yaml:"go,omitempty"`
+	// Manifest holds the entry's inline `.lambda.yml` settings.
+	Manifest `yaml:",inline"`
+}
+
+// Build holds project-wide build settings for compiled functions.
+type Build struct {
+	// Go configures how Go functions are built.
+	Go GoBuild `yaml:"go,omitempty"`
+}
+
+// GoBuild configures `go build` for Go functions.
+type GoBuild struct {
+	// Tags are build tags added after the lambda.norpc tag Lambdary
+	// always sets.
+	Tags []string `yaml:"tags,omitempty"`
+	// LDFlags is passed to `go build -ldflags` as is.
+	LDFlags string `yaml:"ldflags,omitempty"`
 }
 
 // Defaults mirrors Manifest's fields, minus Name: a function manifest has
@@ -92,7 +143,34 @@ func (c *Config) validate(path string) error {
 		return fmt.Errorf("config: %s: defaults.%w", path, err)
 	}
 
+	names := make([]string, 0, len(c.Functions))
+	for name := range c.Functions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if err := validateFunctionEntry(name, c.Functions[name]); err != nil {
+			return fmt.Errorf("config: %s: functions.%s: %w", path, name, err)
+		}
+	}
+
 	return nil
+}
+
+// validateFunctionEntry checks one Config.Functions entry: a usable name,
+// exactly one source, and the inline manifest under the rules a
+// `.lambda.yml` gets.
+func validateFunctionEntry(name string, e FunctionEntry) error {
+	if name == "" || strings.ContainsAny(name, "/ \t\r\n") || e.Name != "" {
+		return ErrFunctionName
+	}
+
+	if (e.Path == "") == (e.Go == "") {
+		return ErrFunctionSource
+	}
+
+	return validateCommon(e.Timeout, e.Memory, e.URL, e.Local, e.Layers)
 }
 
 // ApplyDefaults fills unset fields of m from c.Defaults. Fields already
