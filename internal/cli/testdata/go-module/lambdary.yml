@@ -1,0 +1,10 @@
+functions:
+  hello:
+    go: ./cmd/hello
+  echo:
+    go: ./cmd/echo
+    url:
+      path: /say
+build:
+  go:
+    ldflags: "-X example.com/gomodule/internal/greet.Version=e2e"
