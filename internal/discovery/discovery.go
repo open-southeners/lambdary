@@ -57,7 +57,32 @@ type Function struct {
 	// discovery never fails on these — it reports them so the dev
 	// server can keep serving healthy functions.
 	Warnings []string
+	// Go is set for a function built from Go source: a lambdary.yml
+	// `go:` entry, or a provided.* function directory with a go.mod. The
+	// backends build it into the function's bootstrap on every start.
+	// Nil for every other function.
+	Go *GoSource
 }
+
+// GoSource describes how to build a Go function's bootstrap.
+type GoSource struct {
+	// ModuleDir is the directory holding the function's go.mod.
+	ModuleDir string
+	// Package is the main package to build, relative to ModuleDir in
+	// `go build` notation ("." or "./cmd/ping").
+	Package string
+	// Tags are extra build tags from lambdary.yml's build.go.tags.
+	Tags []string
+	// LDFlags is lambdary.yml's build.go.ldflags.
+	LDFlags string
+}
+
+// goRuntime and goHandler are the runtime and handler a lambdary.yml `go:`
+// entry defaults to: a Go function is a custom-runtime bootstrap binary.
+const (
+	goRuntime = "provided.al2023"
+	goHandler = "bootstrap"
+)
 
 // marker maps a project file present in a function directory to the
 // runtime it implies.
@@ -87,7 +112,16 @@ var markers = []marker{
 // output. Discovery only returns a non-nil error for root-level failures
 // (root missing or unreadable); per-function problems are reported as
 // Warnings instead, per DESIGN.md's fail-safe decision.
+//
+// When cfg lists functions explicitly (lambdary.yml's `functions:`), root
+// is not scanned: exactly those functions are returned, and a listed
+// directory that is missing (or a `go:` package with no go.mod above it)
+// is a root-level error, since the project's own config names it.
 func Discover(root string, cfg *manifest.Config) ([]Function, error) {
+	if cfg != nil && len(cfg.Functions) > 0 {
+		return discoverListed(root, cfg)
+	}
+
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("discovery: %s: %w", root, err)
@@ -100,7 +134,7 @@ func Discover(root string, cfg *manifest.Config) ([]Function, error) {
 			continue
 		}
 
-		fn, ok, err := discoverFunction(filepath.Join(root, entry.Name()), entry.Name(), cfg)
+		fn, ok, err := discoverFunction(filepath.Join(root, entry.Name()), entry.Name(), cfg, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -111,6 +145,92 @@ func Discover(root string, cfg *manifest.Config) ([]Function, error) {
 		functions = append(functions, fn)
 	}
 
+	return finish(functions), nil
+}
+
+// discoverListed resolves cfg.Functions, lambdary.yml's explicit function
+// list, instead of scanning root. Every listed entry yields a function,
+// even a `path:` directory with no manifest or marker file.
+func discoverListed(root string, cfg *manifest.Config) ([]Function, error) {
+	functions := make([]Function, 0, len(cfg.Functions))
+
+	for name, entry := range cfg.Functions {
+		src := entry.Path
+		if entry.Go != "" {
+			src = entry.Go
+		}
+
+		dir := filepath.Join(root, src)
+
+		info, err := os.Stat(dir)
+		if err != nil {
+			return nil, fmt.Errorf("discovery: functions.%s: %w", name, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("discovery: functions.%s: %s is not a directory", name, dir)
+		}
+
+		e := entry
+		e.Name = name
+
+		var goSrc *GoSource
+		if entry.Go != "" {
+			goSrc, err = goPackage(dir)
+			if err != nil {
+				return nil, fmt.Errorf("discovery: functions.%s: %w", name, err)
+			}
+
+			goSrc.Tags = cfg.Build.Go.Tags
+			goSrc.LDFlags = cfg.Build.Go.LDFlags
+		}
+
+		fn, _, err := discoverFunction(dir, name, cfg, &e)
+		if err != nil {
+			return nil, err
+		}
+
+		if goSrc != nil {
+			fn.Go = goSrc
+		}
+
+		functions = append(functions, fn)
+	}
+
+	return finish(functions), nil
+}
+
+// goPackage locates the go.mod at or above pkgDir and returns the
+// GoSource for building pkgDir's main package from it.
+func goPackage(pkgDir string) (*GoSource, error) {
+	abs, err := filepath.Abs(pkgDir)
+	if err != nil {
+		return nil, err
+	}
+
+	for dir := abs; ; dir = filepath.Dir(dir) {
+		if fileExists(filepath.Join(dir, "go.mod")) {
+			rel, err := filepath.Rel(dir, abs)
+			if err != nil {
+				return nil, err
+			}
+
+			pkg := "."
+			if rel != "." {
+				pkg = "./" + filepath.ToSlash(rel)
+			}
+
+			return &GoSource{ModuleDir: dir, Package: pkg}, nil
+		}
+
+		if filepath.Dir(dir) == dir {
+			return nil, fmt.Errorf("no go.mod found at or above %s", pkgDir)
+		}
+	}
+}
+
+// finish sorts functions for deterministic output and annotates route and
+// name collisions.
+func finish(functions []Function) []Function {
 	sort.Slice(functions, func(i, j int) bool {
 		if functions[i].Name != functions[j].Name {
 			return functions[i].Name < functions[j].Name
@@ -120,13 +240,16 @@ func Discover(root string, cfg *manifest.Config) ([]Function, error) {
 
 	warnCollisions(functions)
 
-	return functions, nil
+	return functions
 }
 
 // discoverFunction resolves a single candidate directory into a Function.
 // ok is false when dir contains neither a `.lambda.yml` manifest nor a
-// detectable marker file, meaning it is not a function at all.
-func discoverFunction(dir, dirName string, cfg *manifest.Config) (Function, bool, error) {
+// detectable marker file, meaning it is not a function at all. listed is
+// the lambdary.yml functions entry dir came from (nil when scanning):
+// its inline settings override the directory's own manifest, and a listed
+// directory is a function whether or not it has a manifest or marker.
+func discoverFunction(dir, dirName string, cfg *manifest.Config, listed *manifest.FunctionEntry) (Function, bool, error) {
 	manifestPath := filepath.Join(dir, manifestFileName)
 	hasManifestFile := fileExists(manifestPath)
 
@@ -135,9 +258,11 @@ func discoverFunction(dir, dirName string, cfg *manifest.Config) (Function, bool
 		return Function{}, false, fmt.Errorf("discovery: %s: %w", dir, err)
 	}
 
-	if !hasManifestFile && detectedRuntime == "" && !isContainer {
+	if listed == nil && !hasManifestFile && detectedRuntime == "" && !isContainer {
 		return Function{}, false, nil
 	}
+
+	goEntry := listed != nil && listed.Go != ""
 
 	var warnings []string
 
@@ -148,6 +273,23 @@ func discoverFunction(dir, dirName string, cfg *manifest.Config) (Function, bool
 			warnings = append(warnings, fmt.Sprintf("invalid manifest: %s", err))
 		} else {
 			m = loaded
+		}
+	}
+
+	if listed != nil {
+		m.ApplyOverrides(listed.Manifest)
+	}
+
+	// A `go:` entry says what the function is, so its runtime and
+	// handler outrank project-wide defaults (a project defaulting to
+	// nodejs22.x must not turn its Go functions into Node ones); only the
+	// entry itself or the package's own .lambda.yml can change them.
+	if goEntry {
+		if m.Runtime == "" {
+			m.Runtime = goRuntime
+		}
+		if m.Handler == "" {
+			m.Handler = goHandler
 		}
 	}
 
@@ -187,6 +329,18 @@ func discoverFunction(dir, dirName string, cfg *manifest.Config) (Function, bool
 		warnings = append(warnings, "runtime unknown")
 	}
 
+	// A scanned provided.* function with its own go.mod is a Go function:
+	// built rather than expected to ship a hand-built bootstrap. A
+	// Dockerfile function builds itself, so it is left alone.
+	var goSrc *GoSource
+	if listed == nil && !isContainer && strings.HasPrefix(m.Runtime, "provided.") && fileExists(filepath.Join(dir, "go.mod")) {
+		goSrc = &GoSource{ModuleDir: dir, Package: "."}
+		if cfg != nil {
+			goSrc.Tags = cfg.Build.Go.Tags
+			goSrc.LDFlags = cfg.Build.Go.LDFlags
+		}
+	}
+
 	return Function{
 		Name:     name,
 		Dir:      dir,
@@ -197,6 +351,7 @@ func discoverFunction(dir, dirName string, cfg *manifest.Config) (Function, bool
 		Image:    m.Local.Image,
 		Manifest: m,
 		Warnings: warnings,
+		Go:       goSrc,
 	}, true, nil
 }
 
