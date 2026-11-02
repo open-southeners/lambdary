@@ -103,14 +103,26 @@ func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *l
 		return nil, "", "", err
 	}
 
-	var b backend.Backend
-	if lock != nil {
-		b = container.NewWithLock(cli, runner, lock, cacheDir)
-	} else {
-		b = container.New(cli, runner, cacheDir)
+	placement, err := container.DetectPlacement(ctx, runner, cli, filepath.Dir(cacheDir))
+	if err != nil {
+		return nil, "", "", err
 	}
 
-	return b, backendKindContainer, fmt.Sprintf("container (%s)", cli), nil
+	// A nil *lockfile.Lock must stay a nil interface, not a non-nil one
+	// holding a nil pointer.
+	var imageLock container.Lock
+	if lock != nil {
+		imageLock = lock
+	}
+
+	b := container.NewPlaced(cli, runner, imageLock, cacheDir, placement)
+
+	name := fmt.Sprintf("container (%s)", cli)
+	if placement.Network != "" {
+		name = fmt.Sprintf("container (%s, network %s)", cli, placement.Network)
+	}
+
+	return b, backendKindContainer, name, nil
 }
 
 // resolveProcessBackend implements the "process" mode: rie.Resolve + build
