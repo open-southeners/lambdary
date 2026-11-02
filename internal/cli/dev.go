@@ -21,6 +21,7 @@ import (
 	"github.com/open-southeners/lambdary/internal/lockfile"
 	"github.com/open-southeners/lambdary/internal/manifest"
 	"github.com/open-southeners/lambdary/internal/router"
+	"github.com/open-southeners/lambdary/internal/versions"
 	"github.com/open-southeners/lambdary/internal/watcher"
 )
 
@@ -97,6 +98,10 @@ type devServer struct {
 	lock     *lockfile.Lock
 	cacheDir string
 
+	// versions is shared by every devStack, so published versions and
+	// aliases outlive a structural reload.
+	versions *versions.Store
+
 	// ready receives the server's actual listen address once bound, so
 	// tests (and, in principle, future callers) can dial it without
 	// guessing the resolved port. Buffered 1: run() sends at most once.
@@ -142,6 +147,7 @@ func (d *devServer) run(ctx context.Context) error {
 	}
 	d.lock = lock
 	d.cacheDir = cacheDirFor(d.root)
+	d.versions = versions.NewStore(d.cacheDir)
 
 	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock, d.cacheDir)
 	if err != nil {
@@ -211,7 +217,7 @@ func (d *devServer) buildStack(ctx context.Context, b router.BackendResolver) (*
 		cfg:      cfg,
 		fns:      fns,
 		mgr:      mgr,
-		handler:  router.New(mgr, fns),
+		handler:  router.NewWithVersions(mgr, fns, d.versions),
 	}, nil
 }
 

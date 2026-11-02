@@ -43,7 +43,10 @@ var ErrUnknownFunction = errors.New("unknown function")
 //     invocation at a time per instance" constraint.
 type Manager struct {
 	resolve BackendResolver
-	fns     map[string]discovery.Function
+
+	// fnMu guards fns: Register adds published versions while requests read.
+	fnMu sync.RWMutex
+	fns  map[string]discovery.Function
 
 	// mapMu guards creation of entries in starts and invokeLocks (not the
 	// mutexes themselves, which callers lock/unlock outside mapMu).
@@ -114,13 +117,54 @@ func NewManagerWithResolver(resolve BackendResolver, fns []discovery.Function) *
 	}
 }
 
+// lookup returns the function registered under name.
+func (m *Manager) lookup(name string) (discovery.Function, bool) {
+	m.fnMu.RLock()
+	defer m.fnMu.RUnlock()
+
+	fn, ok := m.fns[name]
+
+	return fn, ok
+}
+
+// Register makes fn, a published version of a function, startable and returns
+// the key every other Manager method knows it by: name:version. Its instance
+// lives apart from the function's $LATEST one, so hot reload, which restarts
+// by plain name, leaves running versions alone. Registering twice is harmless.
+func (m *Manager) Register(fn discovery.Function) string {
+	key := fn.Name + ":" + fn.Version
+
+	m.fnMu.Lock()
+	defer m.fnMu.Unlock()
+
+	m.fns[key] = fn
+
+	return key
+}
+
+// BuildBootstrap compiles fn's Go source with the backend that would run it,
+// so the binary fits that backend's OS and architecture.
+func (m *Manager) BuildBootstrap(ctx context.Context, fn discovery.Function, out string) error {
+	b, err := m.resolve(ctx, fn)
+	if err != nil {
+		return fmt.Errorf("router: resolving backend for %s: %w", fn.Name, err)
+	}
+
+	builder, ok := b.(backend.BootstrapBuilder)
+	if !ok {
+		return fmt.Errorf("router: %s: its backend cannot build a Go bootstrap", fn.Name)
+	}
+
+	return builder.BuildBootstrap(ctx, fn, out)
+}
+
 // Ensure returns the invoke URL of name's running backend instance,
 // starting one on first use. Concurrent Ensure calls for the same name
 // wait for the first to finish rather than starting duplicate instances; a
 // failed start is not cached, so the next Ensure call (from this request or
 // a later one) retries from scratch instead of failing forever.
 func (m *Manager) Ensure(ctx context.Context, name string) (string, error) {
-	fn, ok := m.fns[name]
+	fn, ok := m.lookup(name)
 	if !ok {
 		return "", fmt.Errorf("router: %w: %s", ErrUnknownFunction, name)
 	}
@@ -190,7 +234,7 @@ func (m *Manager) WithLock(name string, fn func() error) error {
 // itself, so the next Ensure for name is guaranteed to see it gone and
 // start fresh rather than possibly racing ahead of the teardown.
 func (m *Manager) Restart(ctx context.Context, name string) error {
-	if _, ok := m.fns[name]; !ok {
+	if _, ok := m.lookup(name); !ok {
 		return fmt.Errorf("router: %w: %s", ErrUnknownFunction, name)
 	}
 
@@ -237,7 +281,7 @@ func (m *Manager) Restart(ctx context.Context, name string) error {
 // invoke has already returned. name must be a known function; unknown names
 // report ErrUnknownFunction, same as Ensure/Restart.
 func (m *Manager) Discard(ctx context.Context, name, invokeURL string) error {
-	if _, ok := m.fns[name]; !ok {
+	if _, ok := m.lookup(name); !ok {
 		return fmt.Errorf("router: %w: %s", ErrUnknownFunction, name)
 	}
 
@@ -269,7 +313,7 @@ func (m *Manager) Discard(ctx context.Context, name, invokeURL string) error {
 // timeout when set, else defaultInvokeTimeout. Unknown names also return
 // the default — Ensure is the one responsible for rejecting those.
 func (m *Manager) InvokeTimeout(name string) time.Duration {
-	fn, ok := m.fns[name]
+	fn, ok := m.lookup(name)
 	if !ok || fn.Manifest == nil || fn.Manifest.Timeout == 0 {
 		return defaultInvokeTimeout
 	}

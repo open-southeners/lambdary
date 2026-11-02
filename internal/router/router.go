@@ -14,6 +14,7 @@ import (
 
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/event"
+	"github.com/open-southeners/lambdary/internal/versions"
 )
 
 // invokePrefix and invokeSuffix bracket the function name in the
@@ -61,6 +62,20 @@ type Router struct {
 	// names lists every distinct function name, sorted, for 404 "known
 	// functions" listings and the GET / index.
 	names []string
+
+	// versions backs the Lambda control plane and qualified invokes. Nil
+	// when the router was built with New: the control plane answers 501 and
+	// only $LATEST can be invoked.
+	versions *versions.Store
+}
+
+// NewWithVersions is New plus the Lambda control plane (see control.go) and
+// qualified invokes, backed by store.
+func NewWithVersions(m *Manager, fns []discovery.Function, store *versions.Store) http.Handler {
+	rt := New(m, fns).(*Router)
+	rt.versions = store
+
+	return rt
 }
 
 // New builds the http.Handler serving m's functions fns: the AWS-compatible
@@ -99,6 +114,10 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if rt.handleControl(w, r) {
+		return
+	}
+
 	if matched := matchRoute(rt.fns, path); len(matched) > 0 {
 		rt.handleRoute(w, r, matched)
 		return
@@ -117,8 +136,14 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handleInvoke implements the AWS-compatible invoke passthrough: resolve
 // name to a running instance (starting it on first use), hold the
 // function's invoke lock for the duration of one request, and forward the
-// body verbatim, streaming the upstream status/body/Content-Type back.
-func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, name string) {
+// body verbatim, streaming the upstream status/body/Content-Type back. ref
+// may be a name or ARN, optionally qualified; a qualifier selects a published
+// version's own instance (see resolveTarget). The response names the version
+// that ran, and flags a handler failure as AWS's Invoke does, because it
+// reports one with a 200.
+func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, ref string) {
+	name, refQualifier := parseFunctionRef(ref)
+
 	if fns := rt.byName[name]; len(fns) > 1 {
 		dirs := make([]string, len(fns))
 		for i, fn := range fns {
@@ -133,10 +158,18 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, name stri
 	}
 
 	if _, ok := rt.byName[name]; !ok {
+		// The header is what the AWS SDKs key their typed error on.
+		w.Header().Set(errorTypeHeader, errResourceNotFound)
 		writeJSON(w, http.StatusNotFound, map[string]any{
 			"message":   fmt.Sprintf("function not found: %s", name),
 			"functions": rt.names,
 		})
+		return
+	}
+
+	target, executed, err := rt.resolveTarget(name, refQualifier, r.URL.Query().Get("Qualifier"))
+	if err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -148,10 +181,16 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 
-	status, respBody, contentType, err := rt.invoke(r, name, body)
+	status, respBody, contentType, err := rt.invoke(r, target, body)
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
+	}
+
+	w.Header().Set("X-Amz-Executed-Version", executed)
+
+	if isErrorEnvelope(respBody) {
+		w.Header().Set("X-Amz-Function-Error", "Unhandled")
 	}
 
 	if contentType != "" {
