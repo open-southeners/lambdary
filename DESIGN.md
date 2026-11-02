@@ -173,6 +173,26 @@ A canary alias draws its weighted choice per invocation in `Store.Resolve`.
 REST-JSON shape (`x-amzn-ErrorType`), which SDKs turn into typed exceptions.
 ARNs use a fixed `us-east-1` region and `000000000000` account.
 
+### Running in a container (post-v0)
+
+Inside a container, Lambdary still drives the host's Docker daemon through its
+socket. `container.Placement` captures what that changes, and its zero value is
+the plain on-the-host case:
+
+- **Bind sources** go through `Placement.HostPath`, from a mount table read by
+  inspecting Lambdary's own container, with `LAMBDARY_HOST_ROOT` taking priority.
+  A path on no mount is a `Start` error: the host has no such path. A Dockerfile
+  build keeps its local path, because the CLI sends the context itself.
+- **Network**: functions join `LAMBDARY_NETWORK`, or Lambdary's own network when
+  it has exactly one. It refuses to guess between several, or to use a network it
+  isn't on, since it couldn't reach those functions.
+- **Reaching a function**: Lambdary's loopback is its own, so it publishes no port
+  and connects to the container's address on that network, port 8080.
+
+Function containers get no network aliases. Functions call each other through
+Lambdary's invoke API, which keeps locks, versions and aliases in the path, and an
+alias named after a function could shadow a shared service on the network.
+
 ## `.lambda.yml` spec (v0)
 
 All keys optional; names and value formats mirror AWS Lambda's public

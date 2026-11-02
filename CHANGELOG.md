@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Explicit function list**: `functions:` in `lambdary.yml` names each function by `go:` package or `path:`.
 - `build.go.tags` and `build.go.ldflags` in `lambdary.yml` customise Go builds.
 - Versions and aliases: `aws lambda publish-version`, `create-alias`, `update-alias` and `invoke --qualifier` work locally, including weighted canaries.
+- Official Docker image, `ghcr.io/open-southeners/lambdary`, for running `lambdary dev` in Docker Compose.
+- `LAMBDARY_NETWORK` puts function containers on a Docker network, and `LAMBDARY_HOST_ROOT` sets the host path of `--root`.
+- `lambdary dev --host` sets the address the server listens on.
 
 ### Changed
 

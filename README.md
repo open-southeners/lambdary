@@ -211,6 +211,47 @@ A snapshot includes everything `.lambda.yml` resolved, including values from
 `local.env_file` in plain text, so keep `.lambdary/versions/` out of version
 control. Function routes (`url.path`) always run `$LATEST`.
 
+### Running in Docker Compose
+
+The `ghcr.io/open-southeners/lambdary` image runs `lambdary dev` as a Compose
+service, starting function containers next to it through the Docker socket:
+
+```yaml
+services:
+  lambdary:
+    image: ghcr.io/open-southeners/lambdary:latest
+    command: ["--root", "functions"]        # added to `lambdary dev`
+    user: "1000:1000"                       # your host user, so files stay yours
+    group_add: ["988"]                      # the docker socket's group
+    stop_grace_period: 40s                  # time to stop function containers
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/workspace
+      - lambdary-cache:/cache               # Go's build and module caches
+volumes:
+  lambdary-cache:
+```
+
+Other services reach it by name, such as `http://lambdary:8000/my-function` or
+an AWS SDK with `http://lambdary:8000` as its endpoint. Functions join the same
+network, so they reach those services by name too, and call each other through
+that same endpoint. `stat -c %g /var/run/docker.sock` prints the group to use.
+
+It works out the rest from its own container: which host paths its mounts come
+from, and which network it is on. Two settings override that, and you need them
+if it can't inspect itself, such as when you set `hostname:` on the service:
+
+| Setting | Meaning |
+|---|---|
+| `LAMBDARY_NETWORK` | Docker network for function containers. Required when the service is on several networks. Also works outside a container. |
+| `LAMBDARY_HOST_ROOT` | Host path of the `--root` directory. |
+
+The image includes Go and downloads the Go version your project asks for. Only
+the container backend runs from it, because it has no Node, Python or Ruby. The
+Docker socket gives this service full control of the host's Docker, so use it
+for local development only. Outside a container, `lambdary dev --host 0.0.0.0`
+listens beyond loopback, with no authentication.
+
 ## Notes and limitations
 
 - The process backend runs your code on your host's runtime versions —

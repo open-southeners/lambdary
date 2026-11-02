@@ -89,7 +89,18 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   with no `go` on `PATH`, every Go function fails to start (the error names
   the failed `env … go build` command).
 - **Fix:** fall back to building inside a `golang` container when the
-  container backend is in use and the host has no toolchain.
+  container backend is in use and the host has no toolchain. The official
+  image already carries one, so this only affects a binary install.
+
+## An unclean stop leaves function containers running
+
+- **Where:** `internal/cli/dev.go` (`serve`'s `StopAll`).
+- **What:** function containers are siblings of Lambdary, so Docker doesn't stop
+  them with it. A SIGKILL, including Compose's after a too-short
+  `stop_grace_period`, leaves them running with no owner. `compose down` won't
+  remove them, and they can keep the network in use, failing its removal.
+- **Fix:** at startup, stop containers labelled `lambdary=1` whose owner is gone.
+  That needs a per-server label, since several projects can share one daemon.
 
 ## A published Go version is tied to the backend that built it
 
