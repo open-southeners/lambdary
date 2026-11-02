@@ -72,7 +72,15 @@ func Watch(ctx context.Context, root string, fns []discovery.Function) (<-chan E
 		return nil, fmt.Errorf("watcher: %w", err)
 	}
 
-	root = filepath.Clean(root)
+	// Everything is watched and compared by absolute path. inotify keeps one
+	// path per directory, so a directory watched both relatively (a function
+	// under a relative --root) and absolutely (the Go module around it) would
+	// report events under whichever came last, and they'd match nothing.
+	root, err = filepath.Abs(root)
+	if err != nil {
+		fsw.Close()
+		return nil, fmt.Errorf("watcher: %w", err)
+	}
 
 	if err := fsw.Add(root); err != nil {
 		fsw.Close()
@@ -89,7 +97,12 @@ func Watch(ctx context.Context, root string, fns []discovery.Function) (<-chan E
 	modules := make(map[string][]string)
 
 	for _, fn := range fns {
-		dir := filepath.Clean(fn.Dir)
+		dir, err := filepath.Abs(fn.Dir)
+		if err != nil {
+			fsw.Close()
+			return nil, fmt.Errorf("watcher: %w", err)
+		}
+
 		fnDirs[dir] = fn.Name
 
 		if err := addTree(fsw, dir); err != nil {
@@ -103,7 +116,12 @@ func Watch(ctx context.Context, root string, fns []discovery.Function) (<-chan E
 
 		// A Go function also depends on the rest of its module (shared
 		// packages, go.mod/go.sum), which may live outside its own dir.
-		modDir := filepath.Clean(fn.Go.ModuleDir)
+		modDir, err := filepath.Abs(fn.Go.ModuleDir)
+		if err != nil {
+			fsw.Close()
+			return nil, fmt.Errorf("watcher: %w", err)
+		}
+
 		if _, seen := modules[modDir]; !seen {
 			if err := addTree(fsw, modDir); err != nil {
 				fsw.Close()

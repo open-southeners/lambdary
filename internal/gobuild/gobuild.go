@@ -40,6 +40,13 @@ var archGOARCH = map[string]string{
 // Go toolchain on the host's PATH. CGO is disabled because the binary has
 // to run on Lambda's base image, not the machine that built it.
 func Build(ctx context.Context, runner backend.Runner, src discovery.GoSource, goos, goarch, out string) error {
+	// `go -C` resolves a relative -o against the module, while callers mean
+	// their own working directory (the cache dir is relative when --root is).
+	out, err := filepath.Abs(out)
+	if err != nil {
+		return fmt.Errorf("go build %s: %w", src.Package, err)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return fmt.Errorf("go build %s: %w", src.Package, err)
 	}

@@ -107,6 +107,38 @@ func TestBuildArgv(t *testing.T) {
 	}
 }
 
+// TestBuildRelativeOutput covers a cache dir under a relative --root: `go -C`
+// would otherwise resolve -o against the module and write somewhere the caller
+// never looks.
+func TestBuildRelativeOutput(t *testing.T) {
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+
+	runner := &recordingRunner{}
+
+	src := discovery.GoSource{ModuleDir: filepath.Join(tmp, "functions"), Package: "./cmd/ping"}
+	if err := Build(context.Background(), runner, src, "linux", "amd64", "functions/.lambdary/bootstrap"); err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+
+	args := runner.args[0]
+
+	for i, arg := range args {
+		if arg != "-o" {
+			continue
+		}
+
+		// t.Chdir resolves symlinks in the temp path on some platforms.
+		if got, want := args[i+1], "functions/.lambdary/bootstrap"; !filepath.IsAbs(got) || !strings.HasSuffix(got, want) {
+			t.Errorf("-o %s, want an absolute path ending in %s", got, want)
+		}
+
+		return
+	}
+
+	t.Fatalf("no -o in %v", args)
+}
+
 func TestBuildFailure(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 30; i++ {
