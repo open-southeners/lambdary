@@ -62,6 +62,21 @@ type Function struct {
 	// backends build it into the function's bootstrap on every start.
 	// Nil for every other function.
 	Go *GoSource
+	// Version is the published version number this Function runs, or "" for
+	// $LATEST, the only kind discovery itself produces. See internal/versions.
+	Version string
+}
+
+// InstanceName identifies this copy of the function in per-instance state
+// such as its layer staging directory: Name for $LATEST, Name@Version for a
+// published version, so the two can run side by side without clobbering each
+// other. "@" cannot be confused with a function also named like a version.
+func (f Function) InstanceName() string {
+	if f.Version == "" {
+		return f.Name
+	}
+
+	return f.Name + "@" + f.Version
 }
 
 // GoSource describes how to build a Go function's bootstrap.

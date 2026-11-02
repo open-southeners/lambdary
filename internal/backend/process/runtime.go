@@ -235,6 +235,10 @@ func manifestEnv(fn discovery.Function, fileEnv map[string]string) []string {
 
 	env = append(env, "AWS_LAMBDA_FUNCTION_NAME="+fn.Name)
 
+	if fn.Version != "" {
+		env = append(env, "AWS_LAMBDA_FUNCTION_VERSION="+fn.Version)
+	}
+
 	if m.Timeout > 0 {
 		env = append(env, fmt.Sprintf("AWS_LAMBDA_FUNCTION_TIMEOUT=%d", m.Timeout))
 	}

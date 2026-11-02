@@ -90,6 +90,10 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 
 	args = append(args, "-e", "AWS_LAMBDA_FUNCTION_NAME="+fn.Name)
 
+	if fn.Version != "" {
+		args = append(args, "-e", "AWS_LAMBDA_FUNCTION_VERSION="+fn.Version)
+	}
+
 	if m.Timeout > 0 {
 		args = append(args, "-e", fmt.Sprintf("AWS_LAMBDA_FUNCTION_TIMEOUT=%d", m.Timeout))
 	}

@@ -161,15 +161,9 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 	// function's architecture, and always wins over any bootstrap file
 	// sitting in its directory: it is what the source says now.
 	if fn.Go != nil && !dockerfileFn {
-		var m manifest.Manifest
-		if fn.Manifest != nil {
-			m = *fn.Manifest
-		}
+		out := gobuild.OutputPath(b.cacheDir, fn.Name, "linux", goArch(fn))
 
-		goarch := gobuild.ArchFor(m.Architectures)
-		out := gobuild.OutputPath(b.cacheDir, fn.Name, "linux", goarch)
-
-		if err := gobuild.Build(ctx, b.runner, *fn.Go, "linux", goarch, out); err != nil {
+		if err := b.BuildBootstrap(ctx, fn, out); err != nil {
 			return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
 		}
 
@@ -240,6 +234,21 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 	return &instance{cli: b.cli, runner: b.runner, id: id, port: port}, nil
 }
 
+// BuildBootstrap implements backend.BootstrapBuilder: fn's Go source, built
+// for linux on the function's architecture, into out.
+func (b *containerBackend) BuildBootstrap(ctx context.Context, fn discovery.Function, out string) error {
+	return gobuild.Build(ctx, b.runner, *fn.Go, "linux", goArch(fn), out)
+}
+
+// goArch returns the GOARCH a container running fn needs.
+func goArch(fn discovery.Function) string {
+	if fn.Manifest == nil {
+		return gobuild.ArchFor(nil)
+	}
+
+	return gobuild.ArchFor(fn.Manifest.Architectures)
+}
+
 // resolveImage picks the image Start runs fn from: the manifest's
 // local.image override (fn.Image) when set, otherwise
 // backend.ImageFor(fn.Runtime). Start sets fn.Image to the freshly built
@@ -306,7 +315,7 @@ func stageLayers(fn discovery.Function, absDir, cacheDir string) (string, error)
 		refs = append(refs, ref)
 	}
 
-	return layers.Stage(fn.Name, refs, absDir, cacheDir)
+	return layers.Stage(fn.InstanceName(), refs, absDir, cacheDir)
 }
 
 // fileExists reports whether path exists, per os.Stat. Errors other than

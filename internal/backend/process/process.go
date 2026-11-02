@@ -121,21 +121,27 @@ func usesGoBuild(fn discovery.Function) bool {
 // it natively) and returns its absolute path. Rebuilt on every Start, so a
 // restart after a code edit runs the edited code.
 func (b *processBackend) buildGo(ctx context.Context, fn discovery.Function) (string, error) {
-	runner := b.runner
-	if runner == nil {
-		runner = backend.ExecRunner{}
-	}
-
 	out, err := filepath.Abs(gobuild.OutputPath(b.cacheDir, fn.Name, runtime.GOOS, runtime.GOARCH))
 	if err != nil {
 		return "", err
 	}
 
-	if err := gobuild.Build(ctx, runner, *fn.Go, runtime.GOOS, runtime.GOARCH, out); err != nil {
+	if err := b.BuildBootstrap(ctx, fn, out); err != nil {
 		return "", err
 	}
 
 	return out, nil
+}
+
+// BuildBootstrap implements backend.BootstrapBuilder: fn's Go source, built
+// for the host, into out.
+func (b *processBackend) BuildBootstrap(ctx context.Context, fn discovery.Function, out string) error {
+	runner := b.runner
+	if runner == nil {
+		runner = backend.ExecRunner{}
+	}
+
+	return gobuild.Build(ctx, runner, *fn.Go, runtime.GOOS, runtime.GOARCH, out)
 }
 
 // Start writes Lambdary's embedded shims to $LAMBDARY_HOME/shims (once,
@@ -189,7 +195,7 @@ func (b *processBackend) Start(ctx context.Context, fn discovery.Function) (back
 		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
 	}
 
-	staging, err := layers.Stage(fn.Name, layerRefs, absDir, b.cacheDir)
+	staging, err := layers.Stage(fn.InstanceName(), layerRefs, absDir, b.cacheDir)
 	if err != nil {
 		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
 	}

@@ -28,8 +28,14 @@ func isDockerfileFunction(fn discovery.Function) bool {
 // dockerBuildTag returns the local image tag Start builds and runs a
 // Dockerfile-marker function under: lambdary/<name>:local. The lambdary/
 // namespace keeps it distinct from any pulled or registry image, and makes
-// locally built images easy to spot (and clean up) with `<cli> images`.
+// locally built images easy to spot (and clean up) with `<cli> images`. A
+// published version gets its own lambdary/<name>:v<N>, so rebuilding $LATEST
+// never retags the image a running version was built from.
 func dockerBuildTag(fn discovery.Function) string {
+	if fn.Version != "" {
+		return "lambdary/" + fn.Name + ":v" + fn.Version
+	}
+
 	return "lambdary/" + fn.Name + ":local"
 }
 
