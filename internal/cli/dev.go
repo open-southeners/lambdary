@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -30,9 +31,14 @@ import (
 // exiting anyway, per plans/m1-container-path.md Unit D ("~10s timeout").
 const shutdownTimeout = 10 * time.Second
 
+// defaultDevHost keeps the dev server off the network unless asked: it runs
+// whatever code it finds and has no authentication.
+const defaultDevHost = "127.0.0.1"
+
 func newDevCmd() *cobra.Command {
 	var (
 		port        int
+		host        string
 		eager       bool
 		backendFlag string
 		noReload    bool
@@ -61,11 +67,14 @@ edit is logged and the previous configuration keeps running. --no-reload
 turns this off.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			d := newDevServer(cmd.OutOrStdout(), cmd.ErrOrStderr(), root, port, eager, backendFlag, noReload)
+			d.host = host
+
 			return d.run(cmd.Context())
 		},
 	}
 
 	cmd.Flags().IntVar(&port, "port", 0, "local HTTP server port (default: lambdary.yml port or 8000)")
+	cmd.Flags().StringVar(&host, "host", defaultDevHost, `address the HTTP server listens on; use "0.0.0.0" to accept other machines or containers`)
 	cmd.Flags().BoolVar(&eager, "eager", false, "start every function's backend immediately instead of on first invoke")
 	cmd.Flags().StringVar(&backendFlag, "backend", "auto", `default execution backend for functions whose own local.backend is "auto": "auto", "container", or "process"`)
 	cmd.Flags().BoolVar(&noReload, "no-reload", false, "disable hot reload (function/config edits require a restart)")
@@ -84,6 +93,7 @@ type devServer struct {
 
 	root        string
 	portFlag    int
+	host        string // "" means defaultDevHost
 	eager       bool
 	backendFlag string
 	noReload    bool
@@ -167,9 +177,18 @@ func (d *devServer) run(ctx context.Context) error {
 
 	port := resolvePort(d.portFlag, stack.cfg)
 
-	renderStartupSummary(d.out, port, stack.fns, backendName)
+	renderStartupSummary(d.out, d.listenHost(), port, stack.fns, backendName)
 
 	return d.serve(ctx, b, stack, port)
+}
+
+// listenHost returns the address the HTTP server binds.
+func (d *devServer) listenHost() string {
+	if d.host == "" {
+		return defaultDevHost
+	}
+
+	return d.host
 }
 
 // buildStack resolves --root, runs discovery, and builds a fresh
@@ -256,7 +275,7 @@ func ensureAll(ctx context.Context, mgr *router.Manager, fns []discovery.Functio
 // atomicHandler swap is visible to other goroutines (the HTTP server's own
 // request-handling goroutines).
 func (d *devServer) serve(ctx context.Context, b router.BackendResolver, stack *devStack, port int) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	addr := net.JoinHostPort(d.listenHost(), strconv.Itoa(port))
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -507,8 +526,8 @@ func (a *atomicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // name/route/runtime, and an invoke hint showing the AWS-compatible
 // passthrough URL pattern, per plans/m1-container-path.md Unit D and
 // plans/m3-process-path.md Unit C.
-func renderStartupSummary(out io.Writer, port int, fns []discovery.Function, backendName string) {
-	fmt.Fprintf(out, "lambdary dev server listening on http://127.0.0.1:%d\n", port)
+func renderStartupSummary(out io.Writer, host string, port int, fns []discovery.Function, backendName string) {
+	fmt.Fprintf(out, "lambdary dev server listening on http://%s\n", net.JoinHostPort(host, strconv.Itoa(port)))
 	fmt.Fprintf(out, "backend: %s\n\n", backendName)
 
 	for _, fn := range fns {
