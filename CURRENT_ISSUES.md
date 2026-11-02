@@ -91,6 +91,28 @@ Discovered during orchestrated work; routed here instead of fixed inline.
 - **Fix:** fall back to building inside a `golang` container when the
   container backend is in use and the host has no toolchain.
 
+## A published Go version is tied to the backend that built it
+
+- **Where:** `internal/versions/publish.go` (`snapshot`),
+  `internal/router/manager.go` (`BuildBootstrap`).
+- **What:** a version freezes one bootstrap, built for the backend that would
+  run the function at publish time. Where host and container differ (macOS, or
+  a container architecture other than the host's), changing `--backend` or
+  `local.backend` afterwards runs a binary built for the wrong platform, and
+  the failure only appears at invoke time.
+- **Fix:** record the target OS and architecture in the version and fail with a
+  clear error on a mismatch, or build a bootstrap for each target at publish.
+
+## Version snapshots and instances are never cleaned up
+
+- **Where:** `internal/versions`, `internal/router/manager.go`.
+- **What:** there is no way to delete a version, so snapshots (full copies,
+  including `node_modules`) accumulate under `.lambdary/versions/`. A version's
+  instance also keeps running until the dev server stops or reconfigures, so
+  each version invoked at least once holds a container or process.
+- **Fix:** add `DeleteFunction` with a qualifier, and stop version instances
+  after an idle period.
+
 ## Merged manifest defaults are never re-validated
 
 - **Where:** `internal/discovery/discovery.go` (`discoverFunction`, the

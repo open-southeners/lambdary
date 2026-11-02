@@ -179,6 +179,38 @@ its `.lambda.yml` says otherwise. Editing a function's own package reloads
 that function; editing shared code elsewhere in the module (or `go.mod` /
 `go.sum`) reloads every function built from it.
 
+### Versions and aliases
+
+`lambdary dev` serves Lambda's version and alias API, so the AWS CLI and SDKs
+work unchanged with an endpoint override:
+
+```sh
+export AWS_ENDPOINT_URL=http://127.0.0.1:8000
+
+aws lambda publish-version --function-name notify --description "sha=abc123"
+aws lambda create-alias --function-name notify --name live --function-version 1
+
+# Send 10% of live's traffic to version 2
+aws lambda update-alias --function-name notify --name live \
+  --routing-config '{"AdditionalVersionWeights":{"2":0.1}}'
+
+aws lambda invoke --function-name notify --qualifier live out.json
+```
+
+Supported calls are `PublishVersion`, `ListVersionsByFunction`, `CreateAlias`,
+`GetAlias`, `UpdateAlias`, and `Invoke` with a version number or alias as its
+qualifier. Each invoke response names the version that ran in
+`X-Amz-Executed-Version`.
+
+A version is an immutable copy of the function under `.lambdary/versions/`, so
+it survives restarts and keeps running the same code however you edit the
+source. Only `$LATEST`, the unqualified function, hot reloads. As on AWS,
+publishing with nothing changed returns the latest version instead of a new one.
+
+A snapshot includes everything `.lambda.yml` resolved, including values from
+`local.env_file` in plain text, so keep `.lambdary/versions/` out of version
+control. Function routes (`url.path`) always run `$LATEST`.
+
 ## Notes and limitations
 
 - The process backend runs your code on your host's runtime versions —

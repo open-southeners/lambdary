@@ -152,6 +152,27 @@ hot reload; the watcher additionally maps a Go source change outside any
 function's own directory to every function of that module. Building needs a
 host Go toolchain.
 
+### Versions and aliases (post-v0)
+
+`internal/versions` stores each function's state under
+`.lambdary/versions/<fn>/`: `state.json` (metadata and aliases, written
+atomically) and one `<N>/` per version holding frozen `code/` and `layers/`.
+Publishing copies the function directory (for a Go function, only the bootstrap
+built by the backend that would run it), folds `local.env_file` into
+`environment`, and merges the layers into one frozen local layer, so a version
+refers to nothing mutable. It compares code and config hashes with the latest
+version and returns that version when both match, as AWS does.
+
+A version runs as a `discovery.Function` with `Version` set and `Dir` pointing
+at its snapshot. `Manager.Register` adds it under the key `name:N`, so it gets
+its own instance and invoke lock, and needs no changes to the Ensure, lock or
+retry paths. Hot reload restarts by plain name, which leaves versions running.
+A canary alias draws its weighted choice per invocation in `Store.Resolve`.
+
+`internal/router/control.go` serves the REST routes and reports errors in AWS's
+REST-JSON shape (`x-amzn-ErrorType`), which SDKs turn into typed exceptions.
+ARNs use a fixed `us-east-1` region and `000000000000` account.
+
 ## `.lambda.yml` spec (v0)
 
 All keys optional; names and value formats mirror AWS Lambda's public

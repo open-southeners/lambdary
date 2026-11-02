@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Go builds**: `provided.*` Go functions are built on every start and hot reload, no hand-built `bootstrap`.
 - **Explicit function list**: `functions:` in `lambdary.yml` names each function by `go:` package or `path:`.
 - `build.go.tags` and `build.go.ldflags` in `lambdary.yml` customise Go builds.
+- Versions and aliases: `aws lambda publish-version`, `create-alias`, `update-alias` and `invoke --qualifier` work locally, including weighted canaries.
+
+### Changed
+
+- `Invoke` responses now carry `X-Amz-Executed-Version`, and `X-Amz-Function-Error` when the handler fails.
+- Invoking an unknown function now reports `ResourceNotFoundException` to AWS SDKs.
 
 ## [1.1.0] - 2026-09-06
 
