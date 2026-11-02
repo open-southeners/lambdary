@@ -1,0 +1,8 @@
+.git
+.github
+.claude
+.lambdary
+dist
+examples
+**/__pycache__
+internal/rie/embedded/aws-lambda-rie
