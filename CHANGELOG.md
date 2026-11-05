@@ -2,8 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
@@ -11,191 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Lambda layers**: a `layers:` manifest key accepting layer version ARNs
-  and local directories/`.zip` files — up to 5 per function, merged in
-  order into `/opt` exactly like AWS (later entries win). ARNs are fetched
-  using your own AWS credentials (works for public third-party layers such
-  as Bref's), cached under `.lambdary/`, and digest-pinned in
-  `.lambdary/lock`. Bref-style custom runtimes (`provided.*`) can now get
-  their `bootstrap` from a layer instead of needing a local `bootstrap`
-  file. On the process backend, pure-code layers resolve through the
-  runtimes' own standard search paths (`NODE_PATH`, `PYTHONPATH`,
-  `RUBYLIB`/`GEM_PATH`, `PATH`); a function whose layer content must run on
-  Amazon Linux falls back to the container backend automatically, with a
-  notice.
-- **Response streaming** (`url.invoke_mode: RESPONSE_STREAM`): a function
-  wrapped in `awslambda.streamifyResponse` now gets its real HTTP status
-  code, headers, and cookies back on its local route, instead of the raw
-  `http-integration-response` frame — JSON prelude, NUL-byte delimiter, and
-  all — leaking straight through as the body. This is a correctness fix as
-  much as a new capability: anyone already testing a streaming handler
-  locally was silently getting that wrong response with no diagnostic. The
-  response is still fully buffered by the emulator end to end, so this
-  doesn't add time-to-first-byte streaming locally — only a correct
-  one-shot response.
+- Lambda layer support.
+- Correct local responses for streaming functions.
 
 ## [1.0.1] - 2026-08-18
 
 ### Changed
 
-- Release binaries now build with Go 1.26.6, closing out every stdlib
-  vulnerability flagged against the previous toolchain (`net/http`,
-  `crypto/tls`, `net/url`, `crypto/x509`, and others).
+- Built release binaries with Go 1.26.6.
 
 ### Fixed
 
-- HTTP responses with a body-less status (`204 No Content`, `304 Not
-  Modified`, `1xx`) no longer fail with "response status code does not
-  allow body" now that the Go 1.26 standard library enforces that rule
-  strictly.
+- Bodyless HTTP responses no longer fail.
 
 ## [1.0.0] - 2026-08-05
 
 ### Added
 
-- An `examples/` playground with three ready-to-run functions: a Node.js
-  Playwright screenshot service (`GET /screenshot?url=...`), a Python
-  image-thumbnail service (`POST /thumbnail`), and a Go checksum service
-  with its own `Dockerfile` (`POST /checksum`) — together covering binary
-  request/response bodies, query strings, environment config, and
-  `Dockerfile`-based container functions end to end.
-- Prebuilt `lambdary` binaries for Linux and macOS (amd64 + arm64) are now
-  attached to every GitHub release, with SHA-256 checksums, and release
-  notes are generated automatically from this changelog.
-- Release binaries now bundle AWS's Lambda Runtime Interface Emulator, so
-  the process backend works out of the box with no `git`/`go` required
-  (source builds via `go install` keep the build-from-source fallback).
-- **Function discovery**: every direct subdirectory of the project root that
-  contains a `.lambda.yml` or a recognizable project file (`package.json`,
-  `composer.json`, `pyproject.toml`/`requirements.txt`, `go.mod`, `Gemfile`,
-  `*.csproj`, `Dockerfile`) is picked up as a Lambda function, with its
-  runtime inferred from that marker; a `.lambda.yml` can always override the
-  inferred runtime.
-- **`.lambda.yml` manifest**: per-function configuration that mirrors AWS
-  Lambda's own vocabulary (`runtime`, `handler`, `timeout`, `memory`,
-  `architectures`, `environment`, `url`) plus a local-only `local` section
-  (`backend`, `image`, `command`, `env_file`) for how the function runs on
-  your machine. A project-wide `lambdary.yml` can set `port`, the functions
-  `root`, and `defaults` inherited by every function manifest. Unknown keys
-  in either file are rejected so typos surface immediately instead of being
-  silently ignored.
-- **`lambdary list` command**: prints every discovered function with its
-  runtime, backend, and local route. Misconfigurations — route collisions,
-  duplicate function names, unresolvable runtimes, invalid manifests — are
-  reported as warnings alongside the table rather than aborting the listing,
-  so a problem in one function never hides the rest.
-- macOS groundwork: confirmed AWS's own Lambda Runtime Interface Emulator
-  (pinned upstream tag `v1.35`) builds and runs natively on Apple Silicon, so
-  local (non-container) function execution will run on AWS's real emulator
-  instead of a reimplementation.
-- **`lambdary dev`**: runs every discovered function behind one local HTTP
-  server, with an AWS-compatible invoke endpoint
-  (`POST /2015-03-31/functions/<name>/invocations`) that works unchanged
-  with `aws lambda invoke --endpoint-url`. Functions start on their first
-  invocation by default; `--eager` starts them all up front instead.
-  Ctrl-C (or SIGTERM) shuts the server down gracefully and stops every
-  running function before exiting.
-- **`lambdary invoke <function>`**: invokes a function once and prints its
-  response. It sends the request to an already-running `lambdary dev`
-  server when one is listening on `--port`, or otherwise starts the
-  function just for that one call and stops it again afterwards. The
-  event body comes from `-e <file>`, `-e -` (stdin), or defaults to `{}`.
-- Functions run as containers on AWS's own Lambda base images: each gets
-  its own container with its code bind-mounted in, starts on demand, and
-  is torn down cleanly on shutdown — no manual cleanup needed even after a
-  crash, since containers are labelled and discoverable
-  (`docker ps --filter label=lambdary`).
-- Fail-safe collision handling at runtime: if two functions share a name or
-  route, `lambdary` still starts and serves every other function normally;
-  hitting the colliding function or route returns a `409` response naming
-  every function competing for it.
-- Functions are now reachable as plain HTTP endpoints at their local route
-  (e.g. `GET /hello`), not just through the invoke passthrough: a request
-  arrives at the handler as an AWS Function URL / API Gateway v2 (`2.0`)
-  event, with headers, cookies, query strings, and binary bodies mapped in
-  both directions. Handlers can return either a plain value (serialized as
-  the JSON body, `200`) or a shaped response (`statusCode`, `headers`,
-  `cookies`, `isBase64Encoded`) for full control over the HTTP reply.
-- **Process backend**: run functions without Docker, using `--backend
-  process` (or the default `--backend auto`, which now falls back to it
-  automatically — with a clear notice — when no container runtime is
-  usable). Functions are driven by AWS's own Lambda Runtime Interface
-  Emulator against your host's own Node, Python, or custom (`bootstrap`)
-  runtime instead of a container; the emulator is built from pinned
-  upstream source and cached on first use (a one-time ~30s build). Node and
-  Python functions run through small built-in shims with no extra
-  dependencies; `local.command` in `.lambda.yml` still overrides the
-  spawned command entirely. Since there's no container image involved, the
-  process backend runs on whatever runtime versions are installed on your
-  machine rather than AWS's pinned Lambda runtime — closer to your host,
-  not a perfect match for AWS's environment.
-- **Hot reload**, on by default in `lambdary dev`: editing a function's code
-  restarts just that function, cold-starting it fresh on its next request.
-  Adding or removing a function directory, or editing a `.lambda.yml` or the
-  project's `lambdary.yml`, reconfigures the whole server on the fly —
-  re-discovering every function and swapping in the new set without
-  dropping the listener. A broken edit is logged with what went wrong and
-  the previous, working configuration keeps running rather than taking the
-  server down. Disable with `--no-reload`.
-- **Live function logs**: each function's combined stdout/stderr — including
-  the emulator's Lambda-style `REPORT` lines — streams to `lambdary dev`'s
-  own output as soon as an instance starts, prefixed `[<name>]` in a color
-  cycled per function. Color is skipped automatically when output isn't a
-  terminal, and always when `NO_COLOR` is set.
-- **`lambdary init <name>`**: scaffolds a new function directory with a
-  ready-to-run handler and `.lambda.yml`, so starting a function needs no
-  boilerplate. `--runtime` picks the stub (`nodejs22.x` by default,
-  `python3.13`, or `provided.al2023` — a working Runtime API `bootstrap`
-  echo loop, not just a placeholder). Refuses to overwrite an existing
-  directory.
-- **API Gateway REST API (`1.0`) payload format**, selectable per function
-  via `url.payload: "1.0"` instead of the default `"2.0"` — events carry
-  the REST API shape (`resource`, `pathParameters.proxy`,
-  `multiValueHeaders`, …) and, like the real service, the response
-  contract is strict: a handler must return a shaped `{statusCode, ...}`
-  object.
-- **`Dockerfile` functions**: a function directory with a `Dockerfile` and
-  no `runtime`/`local.image` now builds and runs automatically — no more
-  manual `docker build`. It rebuilds on every start, so hot reload picks up
-  `Dockerfile` and code edits the same way any other function does.
-- **`.lambdary/lock`**: the container backend records each function's
-  resolved image digest the first time it starts and pins subsequent
-  starts to that digest. Commit the file for reproducible starts across
-  machines; a locally built `Dockerfile` image or an explicit
-  `local.image` override is never pinned.
-- **`local.env_file`**: loads extra environment variables for a function
-  from a dotenv-style file (`KEY=VALUE` per line, `#` comments, optional
-  `export` prefix), merged under the manifest's own `environment` block —
-  explicit `environment` keys always win on conflict.
-- **Ruby on the process backend**: `ruby*` functions now run natively
-  through a dependency-free embedded shim, the same as Node and Python,
-  including AWS's own Ruby handler notation — class/module handlers like
-  `file.Class.method`, not just a top-level function.
-- **Automatic container fallback for the process backend**: a function
-  whose runtime has no process-backend shim (Java, .NET, …) now runs in a
-  container automatically, with a one-line notice, instead of failing the
-  invoke; it only errors when no container runtime is available either.
-
-### Fixed
-
-- The process backend's Node runtime no longer crashes after ~5 minutes
-  idle between invocations — routine for a local dev server, but fatal
-  for its Runtime API long-poll, which used to run over `fetch()` and hit
-  undici's default 5-minute header timeout. Every invocation after that
-  crash used to fail until `dev` was restarted.
-- A function's own `.lambda.yml` `local: backend` setting is now honored:
-  previously `dev`/`invoke` picked one backend for every function, so a
-  function declaring `local.backend: process` (to dodge a container-image
-  limitation, for example) silently ran on the container backend anyway
-  whenever Docker was available. Different functions can now genuinely run
-  on different backends within the same `lambdary dev` server.
-- A crashed function runtime is now replaced on the next invocation instead
-  of failing forever: an invoke that finds its instance dead — a
-  `Runtime.ExitError` response, or a connection failure, the latter
-  retried once transparently — evicts that instance so the next invoke
-  cold-starts a fresh one, matching real Lambda's replace-on-crash
-  behavior.
-- `provided.*` functions now run on the container backend without a
-  `Dockerfile`: the function's `bootstrap` file is mounted where the AWS
-  base image's entrypoint expects it. Compiled custom runtimes still need
-  their binary built beforehand — that remains a known limitation.
+- First release

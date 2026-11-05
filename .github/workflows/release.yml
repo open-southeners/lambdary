@@ -5,9 +5,8 @@
 #
 # Steps:
 #   1. release   - derive the version from the tag, require a matching
-#                  `## [X.Y.Z]` section in CHANGELOG.md (release-flow/
-#                  keep-a-changelog-action, command: query), and create the
-#                  GitHub release with that section as its body.
+#                  `## [X.Y.Z]` section in CHANGELOG.md, extract that section,
+#                  and create or update the GitHub release with `gh`.
 #   2. binaries  - cross-compile linux/darwin, amd64+arm64 binaries, package
 #                  each as a tar.gz with README.md and CHANGELOG.md, generate
 #                  checksums.txt, and upload everything to the release
@@ -17,12 +16,10 @@
 # version, or the release job fails before anything is built or published —
 # see CONTRIBUTING.md's "Release Process" section before tagging.
 #
-# Retry semantics: safe to re-run after a partial failure. softprops/
-# action-gh-release matches on tag_name and updates the existing release
-# instead of creating a duplicate, and re-uploaded assets with the same
-# filename replace the previous ones — so re-running this workflow (or just
-# the `binaries` job) after e.g. a network blip during asset upload picks up
-# where it left off without any manual cleanup.
+# Retry semantics: safe to re-run after a partial failure. The release job
+# updates an existing release, and `gh release upload --clobber` replaces
+# assets with matching names — so re-running this workflow (or just the
+# `binaries` job) after e.g. a network blip picks up where it left off.
 name: Release
 
 on:
@@ -50,28 +47,55 @@ jobs:
           VERSION="${REF_NAME}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Query changelog section
-        id: changelog
-        uses: release-flow/keep-a-changelog-action@v3
-        with:
-          command: query
-          version: ${{ steps.version.outputs.version }}
-
-      - name: No changelog section for this version
-        if: failure()
+      - name: Extract changelog section
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          echo "::error::CHANGELOG.md has no [${VERSION}] section for this tag — see CONTRIBUTING.md's Release Process section"
+          if ! awk -v version="${VERSION}" '
+            $0 == "## [" version "]" || index($0, "## [" version "] - ") == 1 {
+              found = 1
+              next
+            }
+            found && /^## \[/ { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > release-notes.md; then
+            echo "::error::CHANGELOG.md has no [${VERSION}] section for this tag — see CONTRIBUTING.md's Release Process section"
+            exit 1
+          fi
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          body: ${{ steps.changelog.outputs.release-notes }}
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          make_latest: ${{ !contains(github.ref_name, '-') }}
+          if [ ! -s release-notes.md ]; then
+            echo "::error::CHANGELOG.md section [${VERSION}] has no release notes"
+            exit 1
+          fi
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [[ "${VERSION}" == *-* ]]; then
+            prerelease=true
+            latest=false
+          else
+            prerelease=false
+            latest=true
+          fi
+
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            gh release edit "${VERSION}" \
+              --title "${VERSION}" \
+              --notes-file release-notes.md \
+              --prerelease="${prerelease}" \
+              --latest="${latest}"
+          else
+            gh release create "${VERSION}" \
+              --verify-tag \
+              --title "${VERSION}" \
+              --notes-file release-notes.md \
+              --prerelease="${prerelease}" \
+              --latest="${latest}"
+          fi
 
   binaries:
     needs: release
@@ -157,9 +181,10 @@ jobs:
           (cd dist && sha256sum lambdary_*.tar.gz > checksums.txt)
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: |
-            dist/*.tar.gz
-            dist/checksums.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/*.tar.gz \
+            dist/checksums.txt \
+            --clobber
