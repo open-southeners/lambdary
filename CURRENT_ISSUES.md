@@ -145,3 +145,40 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   `discoverFunction`'s existing `Warnings` channel rather than as a hard
   error — matching how a failed `manifest.Load` is already surfaced, and
   keeping discovery fail-safe per DESIGN.md's route-collision decision.
+
+## Local queues are lost on restart
+
+- **Where:** `internal/queue` (`Store`).
+- **What:** queues and their messages live in memory. They survive a hot
+  reload, since the dev server keeps one store, but a restart empties them,
+  including dead-letter queues someone meant to inspect.
+- **Fix:** persist the store under `.lambdary/queues/` on shutdown and load it
+  at startup, if losing messages across restarts turns out to matter.
+
+## SQS's query protocol and FIFO queues are not served
+
+- **Where:** `internal/queue/api.go`.
+- **What:** only the AWS JSON 1.0 protocol is served. Clients that still post
+  `Action=SendMessage` forms (older SDKs, boto3 before its JSON switch) get a
+  404, and FIFO queues (`.fifo` names, `FifoQueue`) are rejected.
+- **Fix:** add a query-protocol adapter over the same `call` methods, with XML
+  responses, and message groups plus deduplication for FIFO, when a project
+  needs either.
+
+## Failed scheduled invocations are not retried
+
+- **Where:** `internal/triggers` (`runSchedule`).
+- **What:** EventBridge invokes Lambda asynchronously, so AWS retries a failed
+  scheduled invocation twice. Locally the failure is only logged.
+- **Fix:** fold into asynchronous invoke support (`X-Amz-Invocation-Type:
+  Event`), and run schedules through it.
+
+## No manual trigger for schedules or queues
+
+- **Where:** `internal/cli/invoke.go`.
+- **What:** `lambdary invoke <fn>` takes a JSON file, so firing a schedule by
+  hand means writing the Scheduled Event yourself. The gaps list asks for
+  `lambdary invoke <fn> --event schedule|sqs|s3|apigw`, but `-e/--event`
+  already names a file.
+- **Fix:** part of the event fixtures work: a separate flag (or a
+  `fixture:` prefix) that builds the event from `internal/triggers`' builders.

@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Official Docker image, `ghcr.io/open-southeners/lambdary`, for running `lambdary dev` in Docker Compose.
 - `LAMBDARY_NETWORK` puts function containers on a Docker network, and `LAMBDARY_HOST_ROOT` sets the host path of `--root`.
 - `lambdary dev --host` sets the address the server listens on.
+- **SQS queues**: `lambdary dev` serves SQS's API, so producers use the AWS SDK or CLI against it, and `events: [{sqs: …}]` delivers batches to a function with `ReportBatchItemFailures`, visibility-timeout retries and a dead-letter queue.
+- **Schedules**: `events: [{schedule: "rate(1 minute)"}]`, in AWS's `rate()`, `cron()` and `at()` syntax, sends EventBridge's Scheduled Event while the server runs; `--no-schedules` turns them off.
+- `queues:` in `lambdary.yml` declares queues that only producers use.
 
 ### Changed
 

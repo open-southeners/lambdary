@@ -79,7 +79,7 @@ terminal with a color-coded `[name]` prefix.
 ## Commands
 
 ```
-lambdary dev      [--port N] [--backend auto|container|process] [--eager] [--no-reload]
+lambdary dev      [--port N] [--backend auto|container|process] [--eager] [--no-reload] [--no-schedules]
 lambdary list                                # discovered functions, runtime, route
 lambdary invoke <fn> [-e event.json|-]       # one-shot invoke (uses the dev server if running)
 lambdary init <name> [--runtime <id>]        # scaffold a function
@@ -211,6 +211,56 @@ A snapshot includes everything `.lambda.yml` resolved, including values from
 `local.env_file` in plain text, so keep `.lambdary/versions/` out of version
 control. Function routes (`url.path`) always run `$LATEST`.
 
+### Queues and schedules
+
+Functions can declare the event sources that invoke them on AWS, and
+`lambdary dev` runs them locally:
+
+```yaml
+# .lambda.yml, or inline in a lambdary.yml functions entry
+events:
+  - sqs:
+      queue: notifications          # created when the server starts
+      batch_size: 10                # 1-10, or up to 10000 with batch_window
+      batch_window: 0               # seconds to gather a fuller batch
+      function_response_types: [ReportBatchItemFailures]
+      visibility_timeout: 30        # queue settings, applied to the queue
+      dlq: notifications-dlq
+      max_receive_count: 5
+  - schedule: rate(1 minute)        # or cron(0 9 ? * MON-FRI *), at(2026-12-01T09:00:00)
+  - schedule:
+      expression: cron(0 9 * * ? *)
+      timezone: Europe/Madrid       # default UTC
+      input: '{"kind":"digest"}'    # sent instead of the Scheduled Event
+      enabled: false
+```
+
+The dev server answers SQS's API on its own port, so producers use the real
+AWS SDK or CLI with `AWS_ENDPOINT_URL_SQS=http://127.0.0.1:8000` (or
+`http://lambdary:8000` from Compose). It supports `CreateQueue`, `GetQueueUrl`,
+`ListQueues`, `DeleteQueue`, `PurgeQueue`, `Get/SetQueueAttributes`,
+`SendMessage[Batch]`, `ReceiveMessage` with long polling, `DeleteMessage[Batch]`
+and `ChangeMessageVisibility[Batch]`. Queues only producers use can be declared
+in `lambdary.yml`:
+
+```yaml
+queues:
+  probe-results: {visibility_timeout: 60}
+  deploy-requests: {dlq: deploy-requests-dlq, max_receive_count: 5}
+```
+
+An `sqs` event polls its queue and invokes the function with real SQS event
+JSON, as an event source mapping does. Messages the function handled are
+deleted. After a function error, the whole batch comes back after the
+visibility timeout. With `ReportBatchItemFailures`, only the IDs in
+`batchItemFailures` come back. A message received more than
+`max_receive_count` times moves to the `dlq`.
+
+A schedule sends EventBridge's `Scheduled Event` each time its expression
+fires, in AWS's `rate()`, six-field `cron()` and `at()` syntax. `--no-schedules`
+turns them off. Both kinds accept `qualifier:` to invoke a version or alias
+instead of `$LATEST`.
+
 ### Running in Docker Compose
 
 The `ghcr.io/open-southeners/lambdary` image runs `lambdary dev` as a Compose
@@ -278,6 +328,10 @@ listens beyond loopback, with no authentication.
   cookies instead of leaking the frame into the body — but the response is
   still buffered by the emulator end to end, so there's no
   time-to-first-byte benefit locally, only a correct one-shot response.
+- Local queues are standard queues held in memory: they survive a hot
+  reload but not a restart. FIFO queues and SQS's older query protocol
+  (`Action=SendMessage` form posts) are not supported. Schedules fire only
+  while the server runs, and a failed scheduled invocation is not retried.
 - `.lambdary/lock` pins the container backend's image digests on first
   start — commit it alongside your functions for reproducible starts across
   machines.

@@ -193,6 +193,36 @@ Function containers get no network aliases. Functions call each other through
 Lambdary's invoke API, which keeps locks, versions and aliases in the path, and an
 alias named after a function could shadow a shared service on the network.
 
+### Queues and schedules (post-v0)
+
+`internal/queue` is an in-memory store of SQS standard queues: per-message
+visibility, delays, retention, and a redrive policy that moves a message
+received more than `maxReceiveCount` times to its dead-letter queue on the next
+receive, as SQS does. Long polls wait on a per-queue channel that is closed and
+replaced on every send. `queue.API` serves the store over SQS's AWS JSON 1.0
+protocol, which current SDKs and the AWS CLI use: every call POSTs to `/` and
+names its operation in `X-Amz-Target`, so the router hands those requests over
+before any path matching. Errors carry `__type` and `x-amzn-query-error`, which
+SDKs turn into typed exceptions, and the MD5 digests SDKs check are computed as
+SQS does. Queue URLs use the request's own host, so they work from the host and
+from other Compose services alike.
+
+`events:` in a manifest declares the sources. The dev server keeps one queue
+store for its lifetime, like the version store, and each structural reload
+declares the queues the new function set names. `internal/triggers` runs one
+poller per `sqs` event and one timer per schedule, invoking through
+`Router.Invoke`, the in-process twin of the invoke API, so locks, versions,
+aliases and dead-runtime handling all apply. A reload stops the old triggers
+before stopping the old Manager, so nothing restarts an instance mid-shutdown.
+
+Pollers long-poll and invoke with SQS event JSON. A function error or failed
+invoke leaves the batch to reappear after its visibility timeout; a successful
+one deletes every message except those named in `batchItemFailures` when
+`ReportBatchItemFailures` is on, applying AWS's rules for malformed responses.
+`internal/schedule` parses `rate()`, six-field `cron()` (1 = Sunday, exactly one
+day field `?`, no `L`/`W`/`#`) and `at()`, and a schedule skips fires it missed
+while an invocation ran.
+
 ## `.lambda.yml` spec (v0)
 
 All keys optional; names and value formats mirror AWS Lambda's public
