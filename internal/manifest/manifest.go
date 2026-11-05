@@ -95,6 +95,9 @@ type Manifest struct {
 	Environment map[string]string `yaml:"environment,omitempty"`
 	// URL configures the local Function URL route for this function.
 	URL URL `yaml:"url,omitempty"`
+	// Events lists the event sources that invoke the function locally:
+	// SQS queues and schedules. They are not inherited from defaults.
+	Events []Event `yaml:"events,omitempty"`
 	// Local holds Lambdary-specific, local-dev-only settings.
 	Local Local `yaml:"local,omitempty"`
 }
@@ -149,6 +152,10 @@ func Load(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("manifest: %s: %w", path, err)
 	}
 
+	if err := validateEvents(m.Events); err != nil {
+		return nil, fmt.Errorf("manifest: %s: %w", path, err)
+	}
+
 	return &m, nil
 }
 
@@ -195,6 +202,9 @@ func (m *Manifest) ApplyOverrides(o Manifest) {
 	}
 	if len(o.Environment) > 0 {
 		m.Environment = o.Environment
+	}
+	if len(o.Events) > 0 {
+		m.Events = o.Events
 	}
 	if o.URL.Path != "" {
 		m.URL.Path = o.URL.Path

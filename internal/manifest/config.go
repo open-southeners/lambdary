@@ -49,6 +49,10 @@ type Config struct {
 	Functions map[string]FunctionEntry `yaml:"functions,omitempty"`
 	// Build holds project-wide build settings for compiled functions.
 	Build Build `yaml:"build,omitempty"`
+	// Queues declares local SQS queues by name, beyond those a function's
+	// sqs events already create — for queues only producers and external
+	// consumers use, or to set a consumed queue's attributes in one place.
+	Queues map[string]QueueSettings `yaml:"queues,omitempty"`
 }
 
 // FunctionEntry is one function in Config.Functions. Exactly one of Path
@@ -143,6 +147,10 @@ func (c *Config) validate(path string) error {
 		return fmt.Errorf("config: %s: defaults.%w", path, err)
 	}
 
+	if err := validateQueues(c.Queues); err != nil {
+		return fmt.Errorf("config: %s: %w", path, err)
+	}
+
 	names := make([]string, 0, len(c.Functions))
 	for name := range c.Functions {
 		names = append(names, name)
@@ -170,7 +178,11 @@ func validateFunctionEntry(name string, e FunctionEntry) error {
 		return ErrFunctionSource
 	}
 
-	return validateCommon(e.Timeout, e.Memory, e.URL, e.Local, e.Layers)
+	if err := validateCommon(e.Timeout, e.Memory, e.URL, e.Local, e.Layers); err != nil {
+		return err
+	}
+
+	return validateEvents(e.Events)
 }
 
 // ApplyDefaults fills unset fields of m from c.Defaults. Fields already
