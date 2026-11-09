@@ -9,6 +9,9 @@ import (
 	"github.com/open-southeners/lambdary/internal/manifest"
 )
 
+// publishSpec publishes the emulator's port on a random loopback host port.
+const publishSpec = "127.0.0.1:0:8080"
+
 // archPlatforms maps AWS Lambda architecture identifiers (manifest
 // `architectures` entries) to the arch component of a `docker run
 // --platform linux/<arch>` value. AWS uses "x86_64" where Docker's platform
@@ -49,7 +52,7 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 		"run", "-d", "--rm",
 		"--label", "lambdary=1",
 		"--label", "lambdary.function=" + fn.Name,
-		"-p", "127.0.0.1:0:8080",
+		"-p", publishSpec,
 		"-v", fnDir + ":/var/task:ro",
 	}
 
@@ -89,6 +92,10 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 	}
 
 	args = append(args, "-e", "AWS_LAMBDA_FUNCTION_NAME="+fn.Name)
+
+	if fn.Version != "" {
+		args = append(args, "-e", "AWS_LAMBDA_FUNCTION_VERSION="+fn.Version)
+	}
 
 	if m.Timeout > 0 {
 		args = append(args, "-e", fmt.Sprintf("AWS_LAMBDA_FUNCTION_TIMEOUT=%d", m.Timeout))

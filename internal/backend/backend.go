@@ -24,6 +24,13 @@ type Backend interface {
 	Start(ctx context.Context, fn discovery.Function) (Instance, error)
 }
 
+// BootstrapBuilder is implemented by a Backend that can compile a Go
+// function (fn.Go set) into the bootstrap binary that backend would run,
+// writing it to out. Publishing a version uses it to freeze the binary.
+type BootstrapBuilder interface {
+	BuildBootstrap(ctx context.Context, fn discovery.Function, out string) error
+}
+
 // Instance is one running copy of a function, backed by whatever the
 // owning Backend started (a container, a subprocess, …). Per DESIGN.md's
 // "The RIE processes one invocation at a time per instance" constraint,

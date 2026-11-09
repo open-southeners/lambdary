@@ -20,7 +20,9 @@ Every direct subdirectory of your project root that contains a `.lambda.yml`
 or a recognizable project file (`package.json`, `composer.json`,
 `pyproject.toml`/`requirements.txt`, `go.mod`, `Gemfile`, `*.csproj`,
 `Dockerfile`) is a function. Its directory name becomes its name and its
-local route.
+local route. Layouts a directory scan can't express, such as one Go module
+with many `cmd/<name>` functions, can list their functions explicitly instead
+(see [Go functions](#go-functions)).
 
 Requests to `http://localhost:8000/<function>/...` arrive in your handler as
 real **AWS Lambda Function URL / API Gateway v2 events** — headers, cookies,
@@ -77,7 +79,7 @@ terminal with a color-coded `[name]` prefix.
 ## Commands
 
 ```
-lambdary dev      [--port N] [--backend auto|container|process] [--eager] [--no-reload]
+lambdary dev      [--port N] [--backend auto|container|process] [--eager] [--no-reload] [--no-schedules]
 lambdary list                                # discovered functions, runtime, route
 lambdary invoke <fn> [-e event.json|-]       # one-shot invoke (uses the dev server if running)
 lambdary init <name> [--runtime <id>]        # scaffold a function
@@ -140,6 +142,166 @@ defaults:                 # inherited by functions that don't set them
 
 Unknown keys in either file are rejected, so typos surface immediately.
 
+### Go functions
+
+A Go function needs no hand-built `bootstrap`. Lambdary builds it with
+`go build -tags lambda.norpc` every time the function starts, so hot reload
+rebuilds it too, and Go's build cache keeps an unchanged rebuild quick. The
+container backend builds for Linux on the function's `architectures`, and the
+process backend builds for your host. Binaries go to `.lambdary/build/`, never
+into your source tree. You need `go` on your `PATH`.
+
+A function directory with a `go.mod` and a `provided.*` runtime is built this
+way (a `Dockerfile` function still builds from its `Dockerfile`). For one
+module holding many functions, list them in `lambdary.yml`:
+
+```yaml
+functions:                # replaces the directory scan when set
+  ping:
+    go: ./cmd/ping        # a Go main package, relative to root
+  notify:
+    go: ./cmd/notify
+    timeout: 30           # any .lambda.yml key, inline
+    url:
+      path: /hooks/notify
+  legacy:
+    path: ./legacy-node   # an ordinary function directory
+build:
+  go:
+    tags: [netgo]         # added after lambda.norpc
+    ldflags: "-X main.version=dev"
+```
+
+Each entry sets exactly one of `go` or `path`, and the key is the function's
+name. Inline settings win over a `.lambda.yml` in that directory, which wins
+over `defaults:`. A `go:` entry runs on `provided.al2023` unless the entry or
+its `.lambda.yml` says otherwise. Editing a function's own package reloads
+that function; editing shared code elsewhere in the module (or `go.mod` /
+`go.sum`) reloads every function built from it.
+
+### Versions and aliases
+
+`lambdary dev` serves Lambda's version and alias API, so the AWS CLI and SDKs
+work unchanged with an endpoint override:
+
+```sh
+export AWS_ENDPOINT_URL=http://127.0.0.1:8000
+
+aws lambda publish-version --function-name notify --description "sha=abc123"
+aws lambda create-alias --function-name notify --name live --function-version 1
+
+# Send 10% of live's traffic to version 2
+aws lambda update-alias --function-name notify --name live \
+  --routing-config '{"AdditionalVersionWeights":{"2":0.1}}'
+
+aws lambda invoke --function-name notify --qualifier live out.json
+```
+
+Supported calls are `PublishVersion`, `ListVersionsByFunction`, `CreateAlias`,
+`GetAlias`, `UpdateAlias`, and `Invoke` with a version number or alias as its
+qualifier. Each invoke response names the version that ran in
+`X-Amz-Executed-Version`.
+
+A version is an immutable copy of the function under `.lambdary/versions/`, so
+it survives restarts and keeps running the same code however you edit the
+source. Only `$LATEST`, the unqualified function, hot reloads. As on AWS,
+publishing with nothing changed returns the latest version instead of a new one.
+
+A snapshot includes everything `.lambda.yml` resolved, including values from
+`local.env_file` in plain text, so keep `.lambdary/versions/` out of version
+control. Function routes (`url.path`) always run `$LATEST`.
+
+### Queues and schedules
+
+Functions can declare the event sources that invoke them on AWS, and
+`lambdary dev` runs them locally:
+
+```yaml
+# .lambda.yml, or inline in a lambdary.yml functions entry
+events:
+  - sqs:
+      queue: notifications          # created when the server starts
+      batch_size: 10                # 1-10, or up to 10000 with batch_window
+      batch_window: 0               # seconds to gather a fuller batch
+      function_response_types: [ReportBatchItemFailures]
+      visibility_timeout: 30        # queue settings, applied to the queue
+      dlq: notifications-dlq
+      max_receive_count: 5
+  - schedule: rate(1 minute)        # or cron(0 9 ? * MON-FRI *), at(2026-12-01T09:00:00)
+  - schedule:
+      expression: cron(0 9 * * ? *)
+      timezone: Europe/Madrid       # default UTC
+      input: '{"kind":"digest"}'    # sent instead of the Scheduled Event
+      enabled: false
+```
+
+The dev server answers SQS's API on its own port, so producers use the real
+AWS SDK or CLI with `AWS_ENDPOINT_URL_SQS=http://127.0.0.1:8000` (or
+`http://lambdary:8000` from Compose). It supports `CreateQueue`, `GetQueueUrl`,
+`ListQueues`, `DeleteQueue`, `PurgeQueue`, `Get/SetQueueAttributes`,
+`SendMessage[Batch]`, `ReceiveMessage` with long polling, `DeleteMessage[Batch]`
+and `ChangeMessageVisibility[Batch]`. Queues only producers use can be declared
+in `lambdary.yml`:
+
+```yaml
+queues:
+  probe-results: {visibility_timeout: 60}
+  deploy-requests: {dlq: deploy-requests-dlq, max_receive_count: 5}
+```
+
+An `sqs` event polls its queue and invokes the function with real SQS event
+JSON, as an event source mapping does. Messages the function handled are
+deleted. After a function error, the whole batch comes back after the
+visibility timeout. With `ReportBatchItemFailures`, only the IDs in
+`batchItemFailures` come back. A message received more than
+`max_receive_count` times moves to the `dlq`.
+
+A schedule sends EventBridge's `Scheduled Event` each time its expression
+fires, in AWS's `rate()`, six-field `cron()` and `at()` syntax. `--no-schedules`
+turns them off. Both kinds accept `qualifier:` to invoke a version or alias
+instead of `$LATEST`.
+
+### Running in Docker Compose
+
+The `ghcr.io/open-southeners/lambdary` image runs `lambdary dev` as a Compose
+service, starting function containers next to it through the Docker socket:
+
+```yaml
+services:
+  lambdary:
+    image: ghcr.io/open-southeners/lambdary:latest
+    command: ["--root", "functions"]        # added to `lambdary dev`
+    user: "1000:1000"                       # your host user, so files stay yours
+    group_add: ["988"]                      # the docker socket's group
+    stop_grace_period: 40s                  # time to stop function containers
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/workspace
+      - lambdary-cache:/cache               # Go's build and module caches
+volumes:
+  lambdary-cache:
+```
+
+Other services reach it by name, such as `http://lambdary:8000/my-function` or
+an AWS SDK with `http://lambdary:8000` as its endpoint. Functions join the same
+network, so they reach those services by name too, and call each other through
+that same endpoint. `stat -c %g /var/run/docker.sock` prints the group to use.
+
+It works out the rest from its own container: which host paths its mounts come
+from, and which network it is on. Two settings override that, and you need them
+if it can't inspect itself, such as when you set `hostname:` on the service:
+
+| Setting | Meaning |
+|---|---|
+| `LAMBDARY_NETWORK` | Docker network for function containers. Required when the service is on several networks. Also works outside a container. |
+| `LAMBDARY_HOST_ROOT` | Host path of the `--root` directory. |
+
+The image includes Go and downloads the Go version your project asks for. Only
+the container backend runs from it, because it has no Node, Python or Ruby. The
+Docker socket gives this service full control of the host's Docker, so use it
+for local development only. Outside a container, `lambdary dev --host 0.0.0.0`
+listens beyond loopback, with no authentication.
+
 ## Notes and limitations
 
 - The process backend runs your code on your host's runtime versions —
@@ -166,6 +328,10 @@ Unknown keys in either file are rejected, so typos surface immediately.
   cookies instead of leaking the frame into the body — but the response is
   still buffered by the emulator end to end, so there's no
   time-to-first-byte benefit locally, only a correct one-shot response.
+- Local queues are standard queues held in memory: they survive a hot
+  reload but not a restart. FIFO queues and SQS's older query protocol
+  (`Action=SendMessage` form posts) are not supported. Schedules fire only
+  while the server runs, and a failed scheduled invocation is not retried.
 - `.lambdary/lock` pins the container backend's image digests on first
   start — commit it alongside your functions for reproducible starts across
   machines.

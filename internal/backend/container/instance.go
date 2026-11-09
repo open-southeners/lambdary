@@ -16,12 +16,14 @@ import (
 const logsTailLines = "20"
 
 // instance is the backend.Instance a containerBackend.Start returns: one
-// running container, identified by its docker ID, with its :8080 published
-// on port.
+// running container, identified by its docker ID, whose emulator answers at
+// host:port: a published loopback port, or the container's own network
+// address when Lambdary runs in a sibling container.
 type instance struct {
 	cli    string
 	runner backend.Runner
 	id     string
+	host   string
 	port   string
 
 	mu      sync.Mutex
@@ -31,7 +33,12 @@ type instance struct {
 // InvokeURL implements backend.Instance, per DESIGN.md's Invoke API
 // endpoint shape.
 func (i *instance) InvokeURL() string {
-	return fmt.Sprintf("http://127.0.0.1:%s/2015-03-31/functions/function/invocations", i.port)
+	host := i.host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+
+	return fmt.Sprintf("http://%s:%s/2015-03-31/functions/function/invocations", host, i.port)
 }
 
 // Stop implements backend.Instance by running `<cli> stop <id>`. The

@@ -120,10 +120,108 @@ always wins.
 | `package.json` | `nodejs22.x` |
 | `composer.json` | `provided.al2023` (custom runtime; a `bootstrap` file is expected — Bref projects satisfy this out of the box, but Lambdary has no Bref-specific logic) |
 | `pyproject.toml` / `requirements.txt` | `python3.13` |
-| `go.mod` | `provided.al2023` (compiled bootstrap) |
+| `go.mod` | `provided.al2023` (bootstrap built from the module on every start) |
 | `Gemfile` | `ruby3.3` |
 | `*.csproj` | `dotnet8` |
 | `Dockerfile` | container backend with that image, as-is |
+
+### Explicit function list (post-v0)
+
+`lambdary.yml` may list functions under `functions:` instead of relying on the
+scan; when it does, only those functions exist. Each entry names exactly one
+source — `path:` (a function directory, handled like a scanned one) or `go:`
+(a Go main package inside a module whose `go.mod` sits at or above it) — plus
+any `.lambda.yml` keys inline. Precedence, highest first: inline entry, the
+directory's own `.lambda.yml`, `defaults:`, detection, built-ins; a `go:`
+entry's `provided.al2023` runtime and `bootstrap` handler sit above
+`defaults:`, since the entry kind states what the function is. This exists
+for one module with many `cmd/<name>` functions, which no directory scan can
+express.
+
+### Go builds (post-v0)
+
+Go functions (a `go:` entry, or a scanned `provided.*` directory with a
+`go.mod`) are built by the backend on every `Start`:
+`CGO_ENABLED=0 GOOS=… GOARCH=… go -C <module> build -tags lambda.norpc[,…] [-ldflags …] -o <out> <pkg>`,
+with tags and ldflags from `lambdary.yml`'s `build.go`. The container backend
+targets Linux on `architectures[0]` and mounts the result as
+`/var/runtime/bootstrap`; the process backend targets the host and runs it
+directly. Output lives under `.lambdary/build/<fn>/<os>_<arch>/`, outside the
+watched source tree. Building on `Start` reuses the existing restart-on-change
+hot reload; the watcher additionally maps a Go source change outside any
+function's own directory to every function of that module. Building needs a
+host Go toolchain.
+
+### Versions and aliases (post-v0)
+
+`internal/versions` stores each function's state under
+`.lambdary/versions/<fn>/`: `state.json` (metadata and aliases, written
+atomically) and one `<N>/` per version holding frozen `code/` and `layers/`.
+Publishing copies the function directory (for a Go function, only the bootstrap
+built by the backend that would run it), folds `local.env_file` into
+`environment`, and merges the layers into one frozen local layer, so a version
+refers to nothing mutable. It compares code and config hashes with the latest
+version and returns that version when both match, as AWS does.
+
+A version runs as a `discovery.Function` with `Version` set and `Dir` pointing
+at its snapshot. `Manager.Register` adds it under the key `name:N`, so it gets
+its own instance and invoke lock, and needs no changes to the Ensure, lock or
+retry paths. Hot reload restarts by plain name, which leaves versions running.
+A canary alias draws its weighted choice per invocation in `Store.Resolve`.
+
+`internal/router/control.go` serves the REST routes and reports errors in AWS's
+REST-JSON shape (`x-amzn-ErrorType`), which SDKs turn into typed exceptions.
+ARNs use a fixed `us-east-1` region and `000000000000` account.
+
+### Running in a container (post-v0)
+
+Inside a container, Lambdary still drives the host's Docker daemon through its
+socket. `container.Placement` captures what that changes, and its zero value is
+the plain on-the-host case:
+
+- **Bind sources** go through `Placement.HostPath`, from a mount table read by
+  inspecting Lambdary's own container, with `LAMBDARY_HOST_ROOT` taking priority.
+  A path on no mount is a `Start` error: the host has no such path. A Dockerfile
+  build keeps its local path, because the CLI sends the context itself.
+- **Network**: functions join `LAMBDARY_NETWORK`, or Lambdary's own network when
+  it has exactly one. It refuses to guess between several, or to use a network it
+  isn't on, since it couldn't reach those functions.
+- **Reaching a function**: Lambdary's loopback is its own, so it publishes no port
+  and connects to the container's address on that network, port 8080.
+
+Function containers get no network aliases. Functions call each other through
+Lambdary's invoke API, which keeps locks, versions and aliases in the path, and an
+alias named after a function could shadow a shared service on the network.
+
+### Queues and schedules (post-v0)
+
+`internal/queue` is an in-memory store of SQS standard queues: per-message
+visibility, delays, retention, and a redrive policy that moves a message
+received more than `maxReceiveCount` times to its dead-letter queue on the next
+receive, as SQS does. Long polls wait on a per-queue channel that is closed and
+replaced on every send. `queue.API` serves the store over SQS's AWS JSON 1.0
+protocol, which current SDKs and the AWS CLI use: every call POSTs to `/` and
+names its operation in `X-Amz-Target`, so the router hands those requests over
+before any path matching. Errors carry `__type` and `x-amzn-query-error`, which
+SDKs turn into typed exceptions, and the MD5 digests SDKs check are computed as
+SQS does. Queue URLs use the request's own host, so they work from the host and
+from other Compose services alike.
+
+`events:` in a manifest declares the sources. The dev server keeps one queue
+store for its lifetime, like the version store, and each structural reload
+declares the queues the new function set names. `internal/triggers` runs one
+poller per `sqs` event and one timer per schedule, invoking through
+`Router.Invoke`, the in-process twin of the invoke API, so locks, versions,
+aliases and dead-runtime handling all apply. A reload stops the old triggers
+before stopping the old Manager, so nothing restarts an instance mid-shutdown.
+
+Pollers long-poll and invoke with SQS event JSON. A function error or failed
+invoke leaves the batch to reappear after its visibility timeout; a successful
+one deletes every message except those named in `batchItemFailures` when
+`ReportBatchItemFailures` is on, applying AWS's rules for malformed responses.
+`internal/schedule` parses `rate()`, six-field `cron()` (1 = Sunday, exactly one
+day field `?`, no `L`/`W`/`#`) and `at()`, and a schedule skips fires it missed
+while an invocation ran.
 
 ## `.lambda.yml` spec (v0)
 

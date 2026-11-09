@@ -95,6 +95,9 @@ type Manifest struct {
 	Environment map[string]string `yaml:"environment,omitempty"`
 	// URL configures the local Function URL route for this function.
 	URL URL `yaml:"url,omitempty"`
+	// Events lists the event sources that invoke the function locally:
+	// SQS queues and schedules. They are not inherited from defaults.
+	Events []Event `yaml:"events,omitempty"`
 	// Local holds Lambdary-specific, local-dev-only settings.
 	Local Local `yaml:"local,omitempty"`
 }
@@ -149,6 +152,10 @@ func Load(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("manifest: %s: %w", path, err)
 	}
 
+	if err := validateEvents(m.Events); err != nil {
+		return nil, fmt.Errorf("manifest: %s: %w", path, err)
+	}
+
 	return &m, nil
 }
 
@@ -164,6 +171,61 @@ func (m *Manifest) ApplyBuiltinDefaults() {
 	}
 	if m.URL.InvokeMode == "" {
 		m.URL.InvokeMode = DefaultInvokeMode
+	}
+}
+
+// ApplyOverrides copies every field set on o onto m, leaving m's value
+// wherever o's is unset; URL and Local merge field by field. It layers a
+// lambdary.yml functions entry's inline settings over the function's own
+// `.lambda.yml`, before (*Config).ApplyDefaults runs.
+func (m *Manifest) ApplyOverrides(o Manifest) {
+	if o.Name != "" {
+		m.Name = o.Name
+	}
+	if o.Runtime != "" {
+		m.Runtime = o.Runtime
+	}
+	if o.Handler != "" {
+		m.Handler = o.Handler
+	}
+	if o.Timeout != 0 {
+		m.Timeout = o.Timeout
+	}
+	if o.Memory != 0 {
+		m.Memory = o.Memory
+	}
+	if len(o.Architectures) > 0 {
+		m.Architectures = o.Architectures
+	}
+	if len(o.Layers) > 0 {
+		m.Layers = o.Layers
+	}
+	if len(o.Environment) > 0 {
+		m.Environment = o.Environment
+	}
+	if len(o.Events) > 0 {
+		m.Events = o.Events
+	}
+	if o.URL.Path != "" {
+		m.URL.Path = o.URL.Path
+	}
+	if o.URL.Payload != "" {
+		m.URL.Payload = o.URL.Payload
+	}
+	if o.URL.InvokeMode != "" {
+		m.URL.InvokeMode = o.URL.InvokeMode
+	}
+	if o.Local.Backend != "" {
+		m.Local.Backend = o.Local.Backend
+	}
+	if o.Local.Image != "" {
+		m.Local.Image = o.Local.Image
+	}
+	if o.Local.Command != "" {
+		m.Local.Command = o.Local.Command
+	}
+	if o.Local.EnvFile != "" {
+		m.Local.EnvFile = o.Local.EnvFile
 	}
 }
 

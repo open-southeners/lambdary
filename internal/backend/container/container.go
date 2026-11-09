@@ -26,6 +26,7 @@ import (
 
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/gobuild"
 	"github.com/open-southeners/lambdary/internal/layers"
 	"github.com/open-southeners/lambdary/internal/manifest"
 )
@@ -55,6 +56,15 @@ type containerBackend struct {
 	// (and, for provided.* functions, may also search for a bootstrap file
 	// in) — see stageLayers and plans/layers.md's Unit C.
 	cacheDir string
+
+	// placement says where Lambdary sits relative to the Docker daemon. Its
+	// zero value is the plain on-the-host case.
+	placement Placement
+}
+
+// NewPlaced is NewWithLock for a known Placement. lock may be nil.
+func NewPlaced(cli string, runner backend.Runner, lock Lock, cacheDir string, placement Placement) backend.Backend {
+	return &containerBackend{cli: cli, runner: runner, lock: lock, cacheDir: cacheDir, placement: placement}
 }
 
 // New returns a backend.Backend that runs functions as containers via cli
@@ -155,6 +165,23 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 	// before this search order existed.
 	bootstrapSrc := filepath.Join(absDir, "bootstrap")
 
+	// A Go function's bootstrap is built fresh on every Start (so a
+	// restart after a code edit picks the edit up) for linux on the
+	// function's architecture, and always wins over any bootstrap file
+	// sitting in its directory: it is what the source says now.
+	if fn.Go != nil && !dockerfileFn {
+		out := gobuild.OutputPath(b.cacheDir, fn.Name, "linux", goArch(fn))
+
+		if err := b.BuildBootstrap(ctx, fn, out); err != nil {
+			return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
+		}
+
+		bootstrapSrc, err = filepath.Abs(out)
+		if err != nil {
+			return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
+		}
+	}
+
 	if strings.HasPrefix(fn.Runtime, "provided.") {
 		if _, err := os.Stat(bootstrapSrc); err != nil {
 			layerBootstrap := ""
@@ -173,7 +200,25 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 		}
 	}
 
-	args := runArgs(fn, runImage, absDir, fileEnv, staging, bootstrapSrc)
+	// Every check above used Lambdary's own view of these paths. From here on
+	// they are bind sources, read by the Docker daemon. A Dockerfile build
+	// above needed no translation: its CLI sends the context itself.
+	hostDir, err := b.placement.HostPath(absDir)
+	if err != nil {
+		return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
+	}
+
+	hostStaging, err := b.hostBindPath(staging)
+	if err != nil {
+		return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
+	}
+
+	hostBootstrap, err := b.hostBindPath(bootstrapSrc)
+	if err != nil {
+		return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
+	}
+
+	args := b.placement.place(runArgs(fn, runImage, hostDir, fileEnv, hostStaging, hostBootstrap))
 
 	out, err := b.runner.Run(ctx, b.cli, args...)
 	if err != nil {
@@ -185,11 +230,12 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 		return nil, fmt.Errorf("container: %s: start: no container ID in output %q", fn.Name, out)
 	}
 
-	port, err := resolvePort(ctx, b.runner, b.cli, id)
+	host, port, err := b.address(ctx, id)
 	if err != nil {
+		tail := logsTail(ctx, b.runner, b.cli, id)
 		stopContainer(ctx, b.runner, b.cli, id)
 
-		return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
+		return nil, fmt.Errorf("container: %s: %w%s", fn.Name, err, tail)
 	}
 
 	timeout := b.readyTimeout
@@ -197,7 +243,7 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 		timeout = defaultReadyTimeout
 	}
 
-	if err := waitReady(ctx, port, timeout); err != nil {
+	if err := waitReady(ctx, host, port, timeout); err != nil {
 		tail := logsTail(ctx, b.runner, b.cli, id)
 		stopContainer(ctx, b.runner, b.cli, id)
 
@@ -213,7 +259,37 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 		b.recordDigest(ctx, image)
 	}
 
-	return &instance{cli: b.cli, runner: b.runner, id: id, port: port}, nil
+	return &instance{cli: b.cli, runner: b.runner, id: id, host: host, port: port}, nil
+}
+
+// hostBindPath translates a bind source that may be unset or relative (the
+// cache directory is relative when --root is) into the daemon's view of it.
+func (b *containerBackend) hostBindPath(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+
+	return b.placement.HostPath(abs)
+}
+
+// BuildBootstrap implements backend.BootstrapBuilder: fn's Go source, built
+// for linux on the function's architecture, into out.
+func (b *containerBackend) BuildBootstrap(ctx context.Context, fn discovery.Function, out string) error {
+	return gobuild.Build(ctx, b.runner, *fn.Go, "linux", goArch(fn), out)
+}
+
+// goArch returns the GOARCH a container running fn needs.
+func goArch(fn discovery.Function) string {
+	if fn.Manifest == nil {
+		return gobuild.ArchFor(nil)
+	}
+
+	return gobuild.ArchFor(fn.Manifest.Architectures)
 }
 
 // resolveImage picks the image Start runs fn from: the manifest's
@@ -282,7 +358,7 @@ func stageLayers(fn discovery.Function, absDir, cacheDir string) (string, error)
 		refs = append(refs, ref)
 	}
 
-	return layers.Stage(fn.Name, refs, absDir, cacheDir)
+	return layers.Stage(fn.InstanceName(), refs, absDir, cacheDir)
 }
 
 // fileExists reports whether path exists, per os.Stat. Errors other than

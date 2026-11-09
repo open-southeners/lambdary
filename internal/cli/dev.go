@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -20,7 +21,10 @@ import (
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/lockfile"
 	"github.com/open-southeners/lambdary/internal/manifest"
+	"github.com/open-southeners/lambdary/internal/queue"
 	"github.com/open-southeners/lambdary/internal/router"
+	"github.com/open-southeners/lambdary/internal/triggers"
+	"github.com/open-southeners/lambdary/internal/versions"
 	"github.com/open-southeners/lambdary/internal/watcher"
 )
 
@@ -29,12 +33,18 @@ import (
 // exiting anyway, per plans/m1-container-path.md Unit D ("~10s timeout").
 const shutdownTimeout = 10 * time.Second
 
+// defaultDevHost keeps the dev server off the network unless asked: it runs
+// whatever code it finds and has no authentication.
+const defaultDevHost = "127.0.0.1"
+
 func newDevCmd() *cobra.Command {
 	var (
 		port        int
+		host        string
 		eager       bool
 		backendFlag string
 		noReload    bool
+		noSchedules bool
 	)
 
 	cmd := &cobra.Command{
@@ -57,17 +67,27 @@ Hot reload is on by default: editing a function's code restarts just that
 function (on its next request); adding/removing a function directory or
 editing a .lambda.yml/lambdary.yml reconfigures the whole server. A broken
 edit is logged and the previous configuration keeps running. --no-reload
-turns this off.`,
+turns this off.
+
+The server also speaks SQS's API: queues named in a function's events
+(and lambdary.yml's queues) are created at startup, and their messages are
+delivered to the function in batches. Schedules in events fire while the
+server runs, unless --no-schedules.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			d := newDevServer(cmd.OutOrStdout(), cmd.ErrOrStderr(), root, port, eager, backendFlag, noReload)
+			d.host = host
+			d.noSchedules = noSchedules
+
 			return d.run(cmd.Context())
 		},
 	}
 
 	cmd.Flags().IntVar(&port, "port", 0, "local HTTP server port (default: lambdary.yml port or 8000)")
+	cmd.Flags().StringVar(&host, "host", defaultDevHost, `address the HTTP server listens on; use "0.0.0.0" to accept other machines or containers`)
 	cmd.Flags().BoolVar(&eager, "eager", false, "start every function's backend immediately instead of on first invoke")
 	cmd.Flags().StringVar(&backendFlag, "backend", "auto", `default execution backend for functions whose own local.backend is "auto": "auto", "container", or "process"`)
 	cmd.Flags().BoolVar(&noReload, "no-reload", false, "disable hot reload (function/config edits require a restart)")
+	cmd.Flags().BoolVar(&noSchedules, "no-schedules", false, "do not fire the schedules in functions' events")
 
 	return cmd
 }
@@ -83,9 +103,11 @@ type devServer struct {
 
 	root        string
 	portFlag    int
+	host        string // "" means defaultDevHost
 	eager       bool
 	backendFlag string
 	noReload    bool
+	noSchedules bool
 
 	streamer *logStreamer
 
@@ -96,6 +118,18 @@ type devServer struct {
 	// directory throughout the server's lifetime.
 	lock     *lockfile.Lock
 	cacheDir string
+
+	// versions is shared by every devStack, so published versions and
+	// aliases outlive a structural reload.
+	versions *versions.Store
+
+	// queues is shared by every devStack too, so messages survive a
+	// structural reload.
+	queues *queue.Store
+
+	// stopTriggers stops the current stack's event sources. Only serve's
+	// loop goroutine touches it.
+	stopTriggers func()
 
 	// ready receives the server's actual listen address once bound, so
 	// tests (and, in principle, future callers) can dial it without
@@ -125,6 +159,7 @@ type devStack struct {
 	cfg      *manifest.Config
 	fns      []discovery.Function
 	mgr      *router.Manager
+	router   *router.Router
 	handler  http.Handler
 }
 
@@ -142,6 +177,8 @@ func (d *devServer) run(ctx context.Context) error {
 	}
 	d.lock = lock
 	d.cacheDir = cacheDirFor(d.root)
+	d.versions = versions.NewStore(d.cacheDir)
+	d.queues = queue.NewStore()
 
 	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock, d.cacheDir)
 	if err != nil {
@@ -161,9 +198,19 @@ func (d *devServer) run(ctx context.Context) error {
 
 	port := resolvePort(d.portFlag, stack.cfg)
 
-	renderStartupSummary(d.out, port, stack.fns, backendName)
+	renderStartupSummary(d.out, d.listenHost(), port, stack.fns, backendName)
+	renderQueues(d.out, port, d.queues.List(""))
 
 	return d.serve(ctx, b, stack, port)
+}
+
+// listenHost returns the address the HTTP server binds.
+func (d *devServer) listenHost() string {
+	if d.host == "" {
+		return defaultDevHost
+	}
+
+	return d.host
 }
 
 // buildStack resolves --root, runs discovery, and builds a fresh
@@ -203,16 +250,45 @@ func (d *devServer) buildStack(ctx context.Context, b router.BackendResolver) (*
 		}
 	}
 
+	declareQueues(d.queues, cfg, fns, d.errOut)
+
 	mgr := router.NewManagerWithResolver(b, fns)
 	mgr.OnStart = d.onInstanceStart
+
+	rt := router.NewServer(mgr, fns, router.Options{Versions: d.versions, Queues: d.queues})
 
 	return &devStack{
 		scanRoot: scanRoot,
 		cfg:      cfg,
 		fns:      fns,
 		mgr:      mgr,
-		handler:  router.New(mgr, fns),
+		router:   rt,
+		handler:  rt,
 	}, nil
+}
+
+// startTriggers starts stack's event sources: SQS pollers and schedules.
+func (d *devServer) startTriggers(ctx context.Context, stack *devStack) {
+	r := &triggers.Runner{
+		Queues:      d.queues,
+		Log:         d.errOut,
+		NoSchedules: d.noSchedules,
+		Invoke: func(ctx context.Context, ref string, payload []byte) (triggers.Result, error) {
+			res, err := stack.router.Invoke(ctx, ref, payload)
+			return triggers.Result{Payload: res.Payload, FunctionError: res.FunctionError}, err
+		},
+	}
+
+	d.stopTriggers = r.Start(ctx, stack.fns)
+}
+
+// stopCurrentTriggers stops the running event sources, if any, so nothing
+// invokes a Manager that is about to stop.
+func (d *devServer) stopCurrentTriggers() {
+	if d.stopTriggers != nil {
+		d.stopTriggers()
+		d.stopTriggers = nil
+	}
 }
 
 // onInstanceStart is Manager.OnStart: it pumps a freshly started instance's
@@ -250,7 +326,7 @@ func ensureAll(ctx context.Context, mgr *router.Manager, fns []discovery.Functio
 // atomicHandler swap is visible to other goroutines (the HTTP server's own
 // request-handling goroutines).
 func (d *devServer) serve(ctx context.Context, b router.BackendResolver, stack *devStack, port int) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	addr := net.JoinHostPort(d.listenHost(), strconv.Itoa(port))
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -288,6 +364,8 @@ func (d *devServer) serve(ctx context.Context, b router.BackendResolver, stack *
 	curMgr := stack.mgr
 	curFns := stack.fns
 
+	d.startTriggers(ctx, stack)
+
 	var (
 		watchEvents <-chan watcher.Event
 		watchCancel context.CancelFunc
@@ -315,6 +393,11 @@ loop:
 		case <-sigCtx.Done():
 			fmt.Fprintln(d.out, "shutting down...")
 
+			// Triggers first, then the long polls clients hold on the SQS
+			// API, which would otherwise keep Shutdown waiting.
+			d.stopCurrentTriggers()
+			d.queues.StopWaiting()
+
 			if watchCancel != nil {
 				watchCancel()
 			}
@@ -340,6 +423,8 @@ loop:
 			curMgr, curFns, watchEvents, watchCancel = d.handleReloadEvent(ctx, ev, b, curMgr, curFns, watchEvents, watchCancel, &handler)
 		}
 	}
+
+	d.stopCurrentTriggers()
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -411,6 +496,8 @@ func (d *devServer) handleReloadEvent(
 		return curMgr, curFns, watchEvents, watchCancel
 	}
 
+	d.stopCurrentTriggers()
+
 	stopCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	if err := curMgr.StopAll(stopCtx); err != nil {
 		for _, line := range strings.Split(err.Error(), "\n") {
@@ -420,6 +507,7 @@ func (d *devServer) handleReloadEvent(
 	cancel()
 
 	handler.Store(newStack.handler)
+	d.startTriggers(ctx, newStack)
 
 	fmt.Fprintf(d.errOut, "reconfigured: %d functions\n", len(newStack.fns))
 
@@ -501,8 +589,8 @@ func (a *atomicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // name/route/runtime, and an invoke hint showing the AWS-compatible
 // passthrough URL pattern, per plans/m1-container-path.md Unit D and
 // plans/m3-process-path.md Unit C.
-func renderStartupSummary(out io.Writer, port int, fns []discovery.Function, backendName string) {
-	fmt.Fprintf(out, "lambdary dev server listening on http://127.0.0.1:%d\n", port)
+func renderStartupSummary(out io.Writer, host string, port int, fns []discovery.Function, backendName string) {
+	fmt.Fprintf(out, "lambdary dev server listening on http://%s\n", net.JoinHostPort(host, strconv.Itoa(port)))
 	fmt.Fprintf(out, "backend: %s\n\n", backendName)
 
 	for _, fn := range fns {
@@ -512,6 +600,19 @@ func renderStartupSummary(out io.Writer, port int, fns []discovery.Function, bac
 		}
 
 		fmt.Fprintf(out, "  %s  %s  (%s)\n", fn.Name, fn.Route, fnRuntime)
+
+		if fn.Manifest == nil {
+			continue
+		}
+
+		for _, ev := range fn.Manifest.Events {
+			switch {
+			case ev.SQS != nil:
+				fmt.Fprintf(out, "      ← sqs %s%s\n", ev.SQS.Queue, disabledNote(ev.SQS.IsEnabled()))
+			case ev.Schedule != nil:
+				fmt.Fprintf(out, "      ← schedule %s%s\n", ev.Schedule.Expression, disabledNote(ev.Schedule.IsEnabled()))
+			}
+		}
 	}
 
 	fmt.Fprintf(out, "\nInvoke a function directly:\n")

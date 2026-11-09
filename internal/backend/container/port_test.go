@@ -56,7 +56,7 @@ func TestWaitReady(t *testing.T) {
 			t.Fatalf("net.SplitHostPort() unexpected error: %v", err)
 		}
 
-		if err := waitReady(context.Background(), port, 2*time.Second); err != nil {
+		if err := waitReady(context.Background(), "127.0.0.1", port, 2*time.Second); err != nil {
 			t.Errorf("waitReady() unexpected error: %v", err)
 		}
 	})
@@ -85,7 +85,7 @@ func TestWaitReady(t *testing.T) {
 			t.Fatalf("net.SplitHostPort() unexpected error: %v", err)
 		}
 
-		if err := waitReady(context.Background(), port, 200*time.Millisecond); err == nil {
+		if err := waitReady(context.Background(), "127.0.0.1", port, 200*time.Millisecond); err == nil {
 			t.Error("waitReady() expected an error against a non-HTTP listener, got nil")
 		}
 	})
@@ -93,7 +93,7 @@ func TestWaitReady(t *testing.T) {
 	t.Run("times out against a port nothing listens on", func(t *testing.T) {
 		start := time.Now()
 
-		err := waitReady(context.Background(), "1", 200*time.Millisecond)
+		err := waitReady(context.Background(), "127.0.0.1", "1", 200*time.Millisecond)
 		if err == nil {
 			t.Fatal("waitReady() expected a timeout error, got nil")
 		}
@@ -109,7 +109,7 @@ func TestWaitReady(t *testing.T) {
 
 		start := time.Now()
 
-		err := waitReady(ctx, "1", 2*time.Second)
+		err := waitReady(ctx, "127.0.0.1", "1", 2*time.Second)
 		if err == nil {
 			t.Fatal("waitReady() expected an error, got nil")
 		}

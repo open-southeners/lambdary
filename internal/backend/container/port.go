@@ -58,7 +58,7 @@ func parsePort(output string) (string, error) {
 	return "", fmt.Errorf("no host port found in %q", output)
 }
 
-// waitReady polls 127.0.0.1:port in a backoff loop until it answers an HTTP
+// waitReady polls host:port in a backoff loop until it answers an HTTP
 // request, timeout elapses, or ctx is cancelled — whichever comes first. It
 // is the readiness gate Start blocks on before returning an Instance, per
 // backend.Backend.Start's contract that the caller never has to poll for
@@ -73,8 +73,8 @@ func parsePort(output string) (string, error) {
 // therefore reports "ready" a beat too early and the first invoke can race
 // it. Requiring one full HTTP round trip (any response, any status code)
 // waits for both hops to be genuinely up.
-func waitReady(ctx context.Context, port string, timeout time.Duration) error {
-	url := "http://" + net.JoinHostPort("127.0.0.1", port) + "/"
+func waitReady(ctx context.Context, host, port string, timeout time.Duration) error {
+	url := "http://" + net.JoinHostPort(host, port) + "/"
 	client := &http.Client{}
 	deadline := time.Now().Add(timeout)
 

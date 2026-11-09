@@ -14,6 +14,8 @@ import (
 
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/event"
+	"github.com/open-southeners/lambdary/internal/queue"
+	"github.com/open-southeners/lambdary/internal/versions"
 )
 
 // invokePrefix and invokeSuffix bracket the function name in the
@@ -61,6 +63,40 @@ type Router struct {
 	// names lists every distinct function name, sorted, for 404 "known
 	// functions" listings and the GET / index.
 	names []string
+
+	// versions backs the Lambda control plane and qualified invokes. Nil
+	// when the router was built with New: the control plane answers 501 and
+	// only $LATEST can be invoked.
+	versions *versions.Store
+
+	// queues serves the local SQS API. Nil leaves SQS calls unanswered.
+	queues *queue.API
+}
+
+// Options are the optional stores NewServer wires into a Router.
+type Options struct {
+	// Versions backs the Lambda control plane and qualified invokes.
+	Versions *versions.Store
+	// Queues backs the local SQS API.
+	Queues *queue.Store
+}
+
+// NewWithVersions is New plus the Lambda control plane (see control.go) and
+// qualified invokes, backed by store.
+func NewWithVersions(m *Manager, fns []discovery.Function, store *versions.Store) http.Handler {
+	return NewServer(m, fns, Options{Versions: store})
+}
+
+// NewServer is New plus whatever opts provides.
+func NewServer(m *Manager, fns []discovery.Function, opts Options) *Router {
+	rt := New(m, fns).(*Router)
+	rt.versions = opts.Versions
+
+	if opts.Queues != nil {
+		rt.queues = queue.NewAPI(opts.Queues)
+	}
+
+	return rt
 }
 
 // New builds the http.Handler serving m's functions fns: the AWS-compatible
@@ -94,8 +130,19 @@ func New(m *Manager, fns []discovery.Function) http.Handler {
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
+	// SQS calls all POST to "/" and name their operation in a header, so
+	// they are told apart before any path matching.
+	if rt.queues != nil && queue.Handles(r) {
+		rt.queues.ServeHTTP(w, r)
+		return
+	}
+
 	if name, ok := invokeName(r.Method, path); ok {
 		rt.handleInvoke(w, r, name)
+		return
+	}
+
+	if rt.handleControl(w, r) {
 		return
 	}
 
@@ -117,8 +164,14 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handleInvoke implements the AWS-compatible invoke passthrough: resolve
 // name to a running instance (starting it on first use), hold the
 // function's invoke lock for the duration of one request, and forward the
-// body verbatim, streaming the upstream status/body/Content-Type back.
-func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, name string) {
+// body verbatim, streaming the upstream status/body/Content-Type back. ref
+// may be a name or ARN, optionally qualified; a qualifier selects a published
+// version's own instance (see resolveTarget). The response names the version
+// that ran, and flags a handler failure as AWS's Invoke does, because it
+// reports one with a 200.
+func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, ref string) {
+	name, refQualifier := parseFunctionRef(ref)
+
 	if fns := rt.byName[name]; len(fns) > 1 {
 		dirs := make([]string, len(fns))
 		for i, fn := range fns {
@@ -133,10 +186,18 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, name stri
 	}
 
 	if _, ok := rt.byName[name]; !ok {
+		// The header is what the AWS SDKs key their typed error on.
+		w.Header().Set(errorTypeHeader, errResourceNotFound)
 		writeJSON(w, http.StatusNotFound, map[string]any{
 			"message":   fmt.Sprintf("function not found: %s", name),
 			"functions": rt.names,
 		})
+		return
+	}
+
+	target, executed, err := rt.resolveTarget(name, refQualifier, r.URL.Query().Get("Qualifier"))
+	if err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -148,10 +209,16 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 
-	status, respBody, contentType, err := rt.invoke(r, name, body)
+	status, respBody, contentType, err := rt.invoke(r.Context(), target, body)
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
+	}
+
+	w.Header().Set("X-Amz-Executed-Version", executed)
+
+	if isErrorEnvelope(respBody) {
+		w.Header().Set("X-Amz-Function-Error", "Unhandled")
 	}
 
 	if contentType != "" {
@@ -204,9 +271,9 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, name stri
 // treated as dead: attempt's Ensure/doInvoke pair is still ongoing, not
 // failed, so timing out says nothing about whether the runtime itself is
 // still alive.
-func (rt *Router) invoke(r *http.Request, name string, body []byte) (status int, respBody []byte, contentType string, err error) {
+func (rt *Router) invoke(parent context.Context, name string, body []byte) (status int, respBody []byte, contentType string, err error) {
 	timeout := rt.mgr.InvokeTimeout(name)
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	status, respBody, contentType, invokeURL, attemptErr := rt.attempt(ctx, name, body)
@@ -422,7 +489,7 @@ func (rt *Router) handleRouteV2(w http.ResponseWriter, r *http.Request, fn disco
 		return
 	}
 
-	status, respBody, _, err := rt.invoke(r, fn.Name, body)
+	status, respBody, _, err := rt.invoke(r.Context(), fn.Name, body)
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
@@ -487,7 +554,7 @@ func (rt *Router) handleRouteV1(w http.ResponseWriter, r *http.Request, fn disco
 		return
 	}
 
-	status, respBody, _, err := rt.invoke(r, fn.Name, body)
+	status, respBody, _, err := rt.invoke(r.Context(), fn.Name, body)
 	if err != nil {
 		writeUpstreamError(w, err)
 		return

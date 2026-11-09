@@ -29,11 +29,9 @@
 // give Stop a safe kill target, while turning argv construction into
 // fragile shell-quoting. This package therefore spawns the long-lived RIE
 // process directly with os/exec (see spawn.go), the same primitive
-// backend.ExecRunner itself is built on. process.New still accepts a
-// backend.Runner to match the pinned constructor signature from
-// plans/m3-process-path.md's Unit B and to leave room for any genuinely
-// short-lived command a future change might add; nothing in this package
-// uses it today.
+// backend.ExecRunner itself is built on. The backend.Runner process.New
+// accepts is used for short-lived commands only: today, building a Go
+// function's bootstrap (internal/gobuild) before spawning it.
 //
 // # Fidelity caveats: host OS, and layer content built for Amazon Linux
 //
@@ -63,10 +61,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/gobuild"
 	"github.com/open-southeners/lambdary/internal/layers"
 	"github.com/open-southeners/lambdary/internal/manifest"
 )
@@ -87,7 +87,7 @@ const stopGrace = 5 * time.Second
 // construct processBackend directly to override them.
 type processBackend struct {
 	riePath string
-	runner  backend.Runner // reserved for future short-lived commands; see package doc.
+	runner  backend.Runner // short-lived commands only (Go builds); see package doc.
 
 	home         string
 	readyTimeout time.Duration
@@ -108,6 +108,40 @@ type processBackend struct {
 // via os/exec rather than runner.
 func New(riePath string, runner backend.Runner, cacheDir string) backend.Backend {
 	return &processBackend{riePath: riePath, runner: runner, cacheDir: cacheDir}
+}
+
+// usesGoBuild reports whether Start runs a freshly built Go bootstrap for
+// fn instead of resolving runtimeCommand: a Go function, unless
+// local.command overrides the runtime command entirely.
+func usesGoBuild(fn discovery.Function) bool {
+	return fn.Go != nil && (fn.Manifest == nil || fn.Manifest.Local.Command == "")
+}
+
+// buildGo builds fn's Go bootstrap for the host (the process backend runs
+// it natively) and returns its absolute path. Rebuilt on every Start, so a
+// restart after a code edit runs the edited code.
+func (b *processBackend) buildGo(ctx context.Context, fn discovery.Function) (string, error) {
+	out, err := filepath.Abs(gobuild.OutputPath(b.cacheDir, fn.Name, runtime.GOOS, runtime.GOARCH))
+	if err != nil {
+		return "", err
+	}
+
+	if err := b.BuildBootstrap(ctx, fn, out); err != nil {
+		return "", err
+	}
+
+	return out, nil
+}
+
+// BuildBootstrap implements backend.BootstrapBuilder: fn's Go source, built
+// for the host, into out.
+func (b *processBackend) BuildBootstrap(ctx context.Context, fn discovery.Function, out string) error {
+	runner := b.runner
+	if runner == nil {
+		runner = backend.ExecRunner{}
+	}
+
+	return gobuild.Build(ctx, runner, *fn.Go, runtime.GOOS, runtime.GOARCH, out)
 }
 
 // Start writes Lambdary's embedded shims to $LAMBDARY_HOME/shims (once,
@@ -139,7 +173,14 @@ func (b *processBackend) Start(ctx context.Context, fn discovery.Function) (back
 		return nil, fmt.Errorf("process: %s: writing shims: %w", fn.Name, err)
 	}
 
-	runtimeName, runtimeArgs, err := runtimeCommand(fn, absDir, shimDir)
+	var runtimeName string
+	var runtimeArgs []string
+
+	if usesGoBuild(fn) {
+		runtimeName, err = b.buildGo(ctx, fn)
+	} else {
+		runtimeName, runtimeArgs, err = runtimeCommand(fn, absDir, shimDir)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
 	}
@@ -154,7 +195,7 @@ func (b *processBackend) Start(ctx context.Context, fn discovery.Function) (back
 		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
 	}
 
-	staging, err := layers.Stage(fn.Name, layerRefs, absDir, b.cacheDir)
+	staging, err := layers.Stage(fn.InstanceName(), layerRefs, absDir, b.cacheDir)
 	if err != nil {
 		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
 	}
