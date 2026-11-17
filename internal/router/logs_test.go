@@ -183,6 +183,29 @@ func TestLogsUnknownFunction(t *testing.T) {
 	}
 }
 
+// TestLogsUnknownQualifierOmitsFunctions checks that a bad version or alias of
+// a real function doesn't list the known functions, which would suggest the
+// name itself was wrong.
+func TestLogsUnknownQualifierOmitsFunctions(t *testing.T) {
+	got := serve(logsRouter(logbus.New()), http.MethodGet, "/_lambdary/logs?function=a:9", "")
+	if got.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", got.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body = %q (%v)", got.Body.String(), err)
+	}
+
+	if _, ok := body["functions"]; ok {
+		t.Errorf("body lists functions for a bad qualifier: %q", got.Body.String())
+	}
+
+	if body["message"] == "" {
+		t.Errorf("body has no message: %q", got.Body.String())
+	}
+}
+
 func TestLogsWithoutBus(t *testing.T) {
 	got := serve(logsRouter(nil), http.MethodGet, "/_lambdary/logs", "")
 	if got.Code != http.StatusNotImplemented {

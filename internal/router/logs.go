@@ -122,10 +122,15 @@ func (rt *Router) handleLogs(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusNotFound
 			}
 
-			writeJSON(w, status, map[string]any{
-				"message":   err.Error(),
-				"functions": rt.names,
-			})
+			body := map[string]any{"message": err.Error()}
+
+			// Known function names only help when the name itself is wrong;
+			// for a bad version or alias of a real function they mislead.
+			if name, _ := parseFunctionRef(function); len(rt.byName[name]) == 0 {
+				body["functions"] = rt.names
+			}
+
+			writeJSON(w, status, body)
 
 			return
 		}
