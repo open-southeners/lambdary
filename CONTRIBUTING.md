@@ -160,7 +160,7 @@ Pushing the tag triggers two jobs:
 2. **`binaries`** — cross-compiles `lambdary` for `linux/amd64`,
    `linux/arm64`, `darwin/amd64`, and `darwin/arm64`; packages each as
    `lambdary_X.Y.Z_<os>_<arch>.tar.gz` (binary + `README.md` +
-   `CHANGELOG.md`); generates `checksums.txt` (SHA-256 of each archive);
+   `CHANGELOG.md` + `LICENSE`); generates `checksums.txt` (SHA-256 of each archive);
    and attaches all of it to the release from step 1. Each binary also
    embeds a per-target copy of AWS's Lambda Runtime Interface Emulator
    (built from the pinned tag in `internal/rie/rie.go`'s `Version`

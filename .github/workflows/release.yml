@@ -8,7 +8,7 @@
 #                  `## [X.Y.Z]` section in CHANGELOG.md, extract that section,
 #                  and create or update the GitHub release with `gh`.
 #   2. binaries  - cross-compile linux/darwin, amd64+arm64 binaries, package
-#                  each as a tar.gz with README.md and CHANGELOG.md, generate
+#                  each as a tar.gz with README.md, CHANGELOG.md and LICENSE, generate
 #                  checksums.txt, and upload everything to the release
 #                  created above.
 #   3. announce  - for stable tags only (no "-" pre-release suffix), post
@@ -164,10 +164,10 @@ jobs:
               -ldflags "-s -w -X github.com/open-southeners/lambdary/internal/cli.version=${VERSION}" \
               -o "${outdir}/lambdary" ./cmd/lambdary
 
-            cp README.md CHANGELOG.md "${outdir}/"
+            cp README.md CHANGELOG.md LICENSE "${outdir}/"
 
             tar -czf "dist/lambdary_${VERSION}_${GOOS}_${GOARCH}.tar.gz" \
-              -C "${outdir}" lambdary README.md CHANGELOG.md
+              -C "${outdir}" lambdary README.md CHANGELOG.md LICENSE
           done
 
           rm -f "${embedded_path}"
