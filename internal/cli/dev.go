@@ -21,6 +21,7 @@ import (
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/lockfile"
 	"github.com/open-southeners/lambdary/internal/manifest"
+	"github.com/open-southeners/lambdary/internal/metrics"
 	"github.com/open-southeners/lambdary/internal/queue"
 	"github.com/open-southeners/lambdary/internal/router"
 	"github.com/open-southeners/lambdary/internal/triggers"
@@ -127,6 +128,10 @@ type devServer struct {
 	// structural reload.
 	queues *queue.Store
 
+	// metrics is shared by every devStack as well, so invocation figures
+	// survive a structural reload.
+	metrics *metrics.Recorder
+
 	// stopTriggers stops the current stack's event sources. Only serve's
 	// loop goroutine touches it.
 	stopTriggers func()
@@ -179,6 +184,7 @@ func (d *devServer) run(ctx context.Context) error {
 	d.cacheDir = cacheDirFor(d.root)
 	d.versions = versions.NewStore(d.cacheDir)
 	d.queues = queue.NewStore()
+	d.metrics = metrics.New()
 
 	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock, d.cacheDir)
 	if err != nil {
@@ -255,7 +261,7 @@ func (d *devServer) buildStack(ctx context.Context, b router.BackendResolver) (*
 	mgr := router.NewManagerWithResolver(b, fns)
 	mgr.OnStart = d.onInstanceStart
 
-	rt := router.NewServer(mgr, fns, router.Options{Versions: d.versions, Queues: d.queues})
+	rt := router.NewServer(mgr, fns, router.Options{Versions: d.versions, Queues: d.queues, Metrics: d.metrics})
 
 	return &devStack{
 		scanRoot: scanRoot,

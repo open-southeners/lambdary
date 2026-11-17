@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/open-southeners/lambdary/internal/cloudwatch"
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/event"
+	"github.com/open-southeners/lambdary/internal/metrics"
 	"github.com/open-southeners/lambdary/internal/queue"
 	"github.com/open-southeners/lambdary/internal/versions"
 )
@@ -71,6 +73,15 @@ type Router struct {
 
 	// queues serves the local SQS API. Nil leaves SQS calls unanswered.
 	queues *queue.API
+
+	// metrics records every invocation and backs /_lambdary/metrics and the
+	// CloudWatch API. Nil when the router was built without Options.Metrics:
+	// nothing is recorded and both endpoints answer 501.
+	metrics *metrics.Recorder
+
+	// cloudwatch serves GetMetricData over metrics. It always exists, so a
+	// router without a recorder still answers 501 to it instead of 404.
+	cloudwatch *cloudwatch.API
 }
 
 // Options are the optional stores NewServer wires into a Router.
@@ -79,6 +90,10 @@ type Options struct {
 	Versions *versions.Store
 	// Queues backs the local SQS API.
 	Queues *queue.Store
+	// Metrics records invocations and serves them at /_lambdary/metrics and
+	// as CloudWatch's GetMetricData. Nil disables recording; both endpoints
+	// then answer 501.
+	Metrics *metrics.Recorder
 }
 
 // NewWithVersions is New plus the Lambda control plane (see control.go) and
@@ -91,6 +106,8 @@ func NewWithVersions(m *Manager, fns []discovery.Function, store *versions.Store
 func NewServer(m *Manager, fns []discovery.Function, opts Options) *Router {
 	rt := New(m, fns).(*Router)
 	rt.versions = opts.Versions
+	rt.metrics = opts.Metrics
+	rt.cloudwatch = cloudwatch.NewAPI(opts.Metrics)
 
 	if opts.Queues != nil {
 		rt.queues = queue.NewAPI(opts.Queues)
@@ -123,7 +140,7 @@ func New(m *Manager, fns []discovery.Function) http.Handler {
 	}
 	sort.Strings(names)
 
-	return &Router{mgr: m, fns: fns, byName: byName, names: names}
+	return &Router{mgr: m, fns: fns, byName: byName, names: names, cloudwatch: cloudwatch.NewAPI(nil)}
 }
 
 // ServeHTTP implements http.Handler.
@@ -135,6 +152,24 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if rt.queues != nil && queue.Handles(r) {
 		rt.queues.ServeHTTP(w, r)
 		return
+	}
+
+	// CloudWatch's GetMetricData is the same kind of call: a POST to a
+	// service-specific path, told apart before the Lambda routes.
+	if cloudwatch.Handles(r) {
+		rt.cloudwatch.ServeHTTP(w, r)
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		switch path {
+		case metricsPath:
+			rt.handleMetrics(w, r)
+			return
+		case healthPath:
+			rt.handleHealth(w)
+			return
+		}
 	}
 
 	if name, ok := invokeName(r.Method, path); ok {
@@ -209,7 +244,9 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, ref strin
 		return
 	}
 
-	status, respBody, contentType, err := rt.invoke(r.Context(), target, body)
+	meta := rt.invocationMeta(name, executed, refQualifier, r.URL.Query().Get("Qualifier"))
+
+	status, respBody, contentType, err := rt.invoke(r.Context(), target, body, meta)
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
@@ -271,21 +308,31 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, ref strin
 // treated as dead: attempt's Ensure/doInvoke pair is still ongoing, not
 // failed, so timing out says nothing about whether the runtime itself is
 // still alive.
-func (rt *Router) invoke(parent context.Context, name string, body []byte) (status int, respBody []byte, contentType string, err error) {
+//
+// Every call records one invocation under meta (see record): a function
+// error or an upstream failure counts as an error, and an invoke whose
+// deadline expired while it waited for the function's invoke lock counts as
+// a throttle instead.
+func (rt *Router) invoke(parent context.Context, name string, body []byte, meta invocationMeta) (status int, respBody []byte, contentType string, err error) {
 	timeout := rt.mgr.InvokeTimeout(name)
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	status, respBody, contentType, invokeURL, attemptErr := rt.attempt(ctx, name, body)
+	started := time.Now()
+
+	status, respBody, contentType, invokeURL, throttled, attemptErr := rt.attempt(ctx, name, body)
 
 	if attemptErr != nil && invokeURL != "" && isTransportFailure(ctx, attemptErr) {
 		rt.mgr.Discard(ctx, name, invokeURL) //nolint:errcheck // best-effort; see Discard's doc comment.
-		status, respBody, contentType, invokeURL, attemptErr = rt.attempt(ctx, name, body)
+		status, respBody, contentType, invokeURL, throttled, attemptErr = rt.attempt(ctx, name, body)
 	}
 
 	if attemptErr != nil {
+		rt.record(meta, started, true, throttled)
 		return 0, nil, "", newInvokeError(ctx, timeout, attemptErr)
 	}
+
+	rt.record(meta, started, isFunctionError(status, respBody), false)
 
 	if isRuntimeExit(respBody) {
 		rt.mgr.Discard(ctx, name, invokeURL) //nolint:errcheck // best-effort; see Discard's doc comment.
@@ -310,21 +357,28 @@ func (rt *Router) invoke(parent context.Context, name string, body []byte) (stat
 // transport failure against a real, now-dead one. err itself can come from
 // either Ensure or doInvoke; isTransportFailure (not attempt) is what tells
 // the two doInvoke failure phases apart — see doInvoke's doc comment.
-func (rt *Router) attempt(ctx context.Context, name string, body []byte) (status int, respBody []byte, contentType, invokeURL string, err error) {
+//
+// throttled reports that the invoke's deadline had already expired by the
+// time the invoke lock was acquired, meaning the invoke spent its whole budget
+// queued behind other invocations of the same function: the local equivalent
+// of Lambda's Throttles. The POST then fails at once on the expired context,
+// so nothing about locking or the outcome changes.
+func (rt *Router) attempt(ctx context.Context, name string, body []byte) (status int, respBody []byte, contentType, invokeURL string, throttled bool, err error) {
 	invokeURL, err = rt.mgr.Ensure(ctx, name)
 	if err != nil {
-		return 0, nil, "", "", err
+		return 0, nil, "", "", false, err
 	}
 
 	// WithLock's fn always returns nil here; the invoke outcome is
 	// reported via the closed-over variables instead so a lock error
 	// (there is none, today) and an invoke error stay distinguishable.
 	_ = rt.mgr.WithLock(name, func() error {
+		throttled = errors.Is(ctx.Err(), context.DeadlineExceeded)
 		status, respBody, contentType, err = doInvoke(ctx, invokeURL, body)
 		return nil
 	})
 
-	return status, respBody, contentType, invokeURL, err
+	return status, respBody, contentType, invokeURL, throttled, err
 }
 
 // isTransportFailure reports whether err from an attempt call means the
@@ -489,7 +543,7 @@ func (rt *Router) handleRouteV2(w http.ResponseWriter, r *http.Request, fn disco
 		return
 	}
 
-	status, respBody, _, err := rt.invoke(r.Context(), fn.Name, body)
+	status, respBody, _, err := rt.invoke(r.Context(), fn.Name, body, rt.invocationMeta(fn.Name, versions.Latest, "", ""))
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
@@ -554,7 +608,7 @@ func (rt *Router) handleRouteV1(w http.ResponseWriter, r *http.Request, fn disco
 		return
 	}
 
-	status, respBody, _, err := rt.invoke(r.Context(), fn.Name, body)
+	status, respBody, _, err := rt.invoke(r.Context(), fn.Name, body, rt.invocationMeta(fn.Name, versions.Latest, "", ""))
 	if err != nil {
 		writeUpstreamError(w, err)
 		return

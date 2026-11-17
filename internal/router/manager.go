@@ -321,6 +321,21 @@ func (m *Manager) InvokeTimeout(name string) time.Duration {
 	return time.Duration(fn.Manifest.Timeout) * time.Second
 }
 
+// Running reports which instances exist right now, keyed the way Ensure keys
+// them (a plain name for $LATEST, name:version for a published version). It
+// is a snapshot for health reporting; instances may start or stop right after.
+func (m *Manager) Running() map[string]bool {
+	m.instMu.Lock()
+	defer m.instMu.Unlock()
+
+	running := make(map[string]bool, len(m.instances))
+	for key := range m.instances {
+		running[key] = true
+	}
+
+	return running
+}
+
 // StopAll stops every instance started so far, collecting per-instance
 // errors with errors.Join rather than stopping at the first failure so one
 // stuck container doesn't strand the rest running.

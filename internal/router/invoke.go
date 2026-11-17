@@ -42,7 +42,7 @@ func (rt *Router) Invoke(ctx context.Context, ref string, payload []byte) (Invok
 		return InvokeResult{}, err
 	}
 
-	status, body, _, err := rt.invoke(ctx, target, payload)
+	status, body, _, err := rt.invoke(ctx, target, payload, rt.invocationMeta(name, executed, qualifier, ""))
 	if err != nil {
 		return InvokeResult{}, err
 	}
