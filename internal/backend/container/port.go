@@ -2,6 +2,7 @@ package container
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -74,6 +75,18 @@ func parsePort(output string) (string, error) {
 // it. Requiring one full HTTP round trip (any response, any status code)
 // waits for both hops to be genuinely up.
 func waitReady(ctx context.Context, host, port string, timeout time.Duration) error {
+	return waitReadyUnless(ctx, host, port, timeout, nil)
+}
+
+// errContainerGone is what waitReadyUnless returns when its gone callback
+// reports the container is no longer running.
+var errContainerGone = errors.New("container stopped before it was ready")
+
+// waitReadyUnless is waitReady that also gives up with errContainerGone as
+// soon as gone (when non-nil) reports true after a failed probe, so a
+// container that exited at once is reported immediately instead of after the
+// full timeout.
+func waitReadyUnless(ctx context.Context, host, port string, timeout time.Duration, gone func() bool) error {
 	url := "http://" + net.JoinHostPort(host, port) + "/"
 	client := &http.Client{}
 	deadline := time.Now().Add(timeout)
@@ -92,6 +105,10 @@ func waitReady(ctx context.Context, host, port string, timeout time.Duration) er
 			return nil
 		}
 		lastErr = err
+
+		if gone != nil && gone() {
+			return errContainerGone
+		}
 
 		if ctx.Err() != nil {
 			return fmt.Errorf("waiting for %s to be ready: %w", url, ctx.Err())

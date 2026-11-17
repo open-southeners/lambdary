@@ -49,7 +49,10 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 	provided := strings.HasPrefix(fn.Runtime, "provided.")
 
 	args := []string{
-		"run", "-d", "--rm",
+		// No --rm: an instantly exiting container must stay inspectable so
+		// Start can report its exit code and logs. Start and Stop remove it
+		// themselves (see stopContainer).
+		"run", "-d",
 		"--label", "lambdary=1",
 		"--label", "lambdary.function=" + fn.Name,
 		"-p", publishSpec,
@@ -106,9 +109,10 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 		args = append(args, "-e", fmt.Sprintf("AWS_LAMBDA_FUNCTION_MEMORY_SIZE=%d", m.Memory))
 	}
 
-	if len(m.Architectures) > 0 {
-		args = append(args, "--platform", platformFor(m.Architectures[0]))
-	}
+	// Always pinned, defaulting to x86_64 like AWS: a run that leaves the
+	// platform to whatever variant is cached under the tag would mismatch
+	// the bootstrap built for archOf(fn).
+	args = append(args, "--platform", platformOf(fn))
 
 	args = append(args, image)
 
@@ -122,6 +126,28 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 	}
 
 	return args
+}
+
+// defaultArch is the AWS architecture a function runs on when its manifest
+// names none, as on AWS itself.
+const defaultArch = "x86_64"
+
+// archOf returns fn's AWS architecture identifier ("x86_64" or "arm64"): the
+// manifest's first `architectures` entry, or defaultArch. It is the single
+// source for both the container platform (platformOf) and the Go build
+// arch (goArch), so the bootstrap and the image can never disagree.
+func archOf(fn discovery.Function) string {
+	if fn.Manifest != nil && len(fn.Manifest.Architectures) > 0 {
+		return fn.Manifest.Architectures[0]
+	}
+
+	return defaultArch
+}
+
+// platformOf returns the `--platform` value for fn's container, e.g.
+// "linux/amd64".
+func platformOf(fn discovery.Function) string {
+	return platformFor(archOf(fn))
 }
 
 // platformFor renders arch (an AWS architecture identifier, e.g. "arm64" or

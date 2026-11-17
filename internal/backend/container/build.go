@@ -63,7 +63,7 @@ func (b *containerBackend) buildDockerfileImage(ctx context.Context, fn discover
 
 	tag := dockerBuildTag(fn)
 
-	out, err := b.runner.Run(ctx, b.cli, "build", "-t", tag, fnDir)
+	out, err := b.runner.Run(ctx, b.cli, "build", "--platform", platformOf(fn), "-t", tag, fnDir)
 	if err != nil {
 		return "", fmt.Errorf("building %s: %w%s", tag, err, buildOutputTail(string(out)))
 	}

@@ -7,6 +7,8 @@ package backend
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 
 	"github.com/open-southeners/lambdary/internal/discovery"
@@ -23,6 +25,39 @@ type Backend interface {
 	// readiness themselves.
 	Start(ctx context.Context, fn discovery.Function) (Instance, error)
 }
+
+// ErrStartFailed is what errors.Is matches on any error Backend.Start
+// returns because the function's own instance never came up — its container
+// exited at once, or never answered on its invoke port — as opposed to a
+// failure of Lambdary or the container engine itself (pulling an image,
+// building, a missing bootstrap). Callers use it to tell "the function
+// failed to start" apart from an error the function returned while running.
+var ErrStartFailed = errors.New("function failed to start")
+
+// StartFailedError is the concrete error behind ErrStartFailed: errors.Is
+// reports true for ErrStartFailed, and errors.As recovers the function name
+// and (when there is one) the underlying cause.
+type StartFailedError struct {
+	// Function is the function's name.
+	Function string
+	// Detail says what happened, e.g. "container exited with code 255:
+	// exec /var/runtime/bootstrap: exec format error".
+	Detail string
+	// Cause is the underlying error, when the failure had one (nil for an
+	// observed container exit).
+	Cause error
+}
+
+// Error renders "function <name>: <detail>".
+func (e *StartFailedError) Error() string {
+	return fmt.Sprintf("function %s: %s", e.Function, e.Detail)
+}
+
+// Is reports whether target is ErrStartFailed.
+func (e *StartFailedError) Is(target error) bool { return target == ErrStartFailed }
+
+// Unwrap returns the underlying cause, if any.
+func (e *StartFailedError) Unwrap() error { return e.Cause }
 
 // BootstrapBuilder is implemented by a Backend that can compile a Go
 // function (fn.Go set) into the bootstrap binary that backend would run,

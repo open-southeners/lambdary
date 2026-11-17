@@ -42,7 +42,8 @@ func (i *instance) InvokeURL() string {
 }
 
 // Stop implements backend.Instance by running `<cli> stop <id>`. The
-// container was started with --rm, so a successful stop also removes it.
+// container is then removed with `<cli> rm -f`, as it is not started with
+// --rm.
 // Repeat calls are a no-op, per backend.Instance.Stop's contract; a stop
 // racing the container already having exited or been removed is treated as
 // success rather than surfaced as an error, since the end state — no
@@ -85,6 +86,12 @@ func (i *instance) Logs() io.Reader {
 // yet) and instance.Stop.
 func stopContainer(ctx context.Context, runner backend.Runner, cli, id string) error {
 	out, err := runner.Run(ctx, cli, "stop", id)
+	if err != nil && !strings.Contains(strings.ToLower(string(out)), "no such container") {
+		return err
+	}
+
+	// Containers are not started with --rm (see runArgs), so remove it too.
+	out, err = runner.Run(ctx, cli, "rm", "-f", id)
 	if err != nil && !strings.Contains(strings.ToLower(string(out)), "no such container") {
 		return err
 	}

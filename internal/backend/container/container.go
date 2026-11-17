@@ -150,6 +150,16 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 		}
 	}
 
+	// A pulled runtime image is cached under its tag whatever platform it
+	// was first pulled for, so make sure the local copy is the platform
+	// this function runs on before every run. An explicit local.image and a
+	// freshly built tag are the user's own and are left as they are.
+	if !overridden && !dockerfileFn {
+		if err := b.ensureImage(ctx, runImage, platformOf(fn)); err != nil {
+			return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
+		}
+	}
+
 	// runArgs bind-mounts a resolved bootstrapSrc to /var/runtime/bootstrap
 	// for a provided.* function (see argv.go), following real Lambda's own
 	// search order: <absDir>/bootstrap first (today's behavior, `/var/task`
@@ -232,10 +242,7 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 
 	host, port, err := b.address(ctx, id)
 	if err != nil {
-		tail := logsTail(ctx, b.runner, b.cli, id)
-		stopContainer(ctx, b.runner, b.cli, id)
-
-		return nil, fmt.Errorf("container: %s: %w%s", fn.Name, err, tail)
+		return nil, b.startFailed(ctx, fn, id, err)
 	}
 
 	timeout := b.readyTimeout
@@ -243,11 +250,8 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 		timeout = defaultReadyTimeout
 	}
 
-	if err := waitReady(ctx, host, port, timeout); err != nil {
-		tail := logsTail(ctx, b.runner, b.cli, id)
-		stopContainer(ctx, b.runner, b.cli, id)
-
-		return nil, fmt.Errorf("container: %s: %w%s", fn.Name, err, tail)
+	if err := waitReadyUnless(ctx, host, port, timeout, func() bool { return b.containerGone(ctx, id) }); err != nil {
+		return nil, b.startFailed(ctx, fn, id, err)
 	}
 
 	// A successful start of a not-yet-pinned tag is the moment Start
@@ -285,11 +289,7 @@ func (b *containerBackend) BuildBootstrap(ctx context.Context, fn discovery.Func
 
 // goArch returns the GOARCH a container running fn needs.
 func goArch(fn discovery.Function) string {
-	if fn.Manifest == nil {
-		return gobuild.ArchFor(nil)
-	}
-
-	return gobuild.ArchFor(fn.Manifest.Architectures)
+	return gobuild.ArchFor([]string{archOf(fn)})
 }
 
 // resolveImage picks the image Start runs fn from: the manifest's

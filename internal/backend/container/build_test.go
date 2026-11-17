@@ -67,7 +67,7 @@ func TestContainerBackendStartDockerfileFunction(t *testing.T) {
 		if len(buildCalls) != 1 {
 			t.Fatalf("build calls = %d, want 1", len(buildCalls))
 		}
-		wantBuild := []string{"build", "-t", "lambdary/docker-app:local", dir}
+		wantBuild := []string{"build", "--platform", "linux/amd64", "-t", "lambdary/docker-app:local", dir}
 		if !reflect.DeepEqual(buildCalls[0], wantBuild) {
 			t.Errorf("build argv = %v, want %v", buildCalls[0], wantBuild)
 		}

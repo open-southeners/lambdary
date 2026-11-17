@@ -62,6 +62,11 @@ type inspectResult struct {
 		Source      string `json:"Source"`
 		Destination string `json:"Destination"`
 	} `json:"Mounts"`
+	State struct {
+		Status   string `json:"Status"`
+		Running  bool   `json:"Running"`
+		ExitCode int    `json:"ExitCode"`
+	} `json:"State"`
 	NetworkSettings struct {
 		Networks map[string]struct {
 			IPAddress string `json:"IPAddress"`

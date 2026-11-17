@@ -28,7 +28,7 @@ func TestRunArgs(t *testing.T) {
 		got := runArgs(fn, "public.ecr.aws/lambda/python:3.13", "/abs/hello", nil, "", "")
 
 		want := []string{
-			"run", "-d", "--rm",
+			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
 			"-p", "127.0.0.1:0:8080",
@@ -58,7 +58,7 @@ func TestRunArgs(t *testing.T) {
 		got := runArgs(fn, "image", "/abs/hello", nil, "", "")
 
 		want := []string{
-			"run", "-d", "--rm",
+			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
 			"-p", "127.0.0.1:0:8080",
@@ -82,12 +82,13 @@ func TestRunArgs(t *testing.T) {
 		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/minimal", nil, "", "")
 
 		want := []string{
-			"run", "-d", "--rm",
+			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=minimal",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/minimal:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=minimal",
+			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/nodejs:22",
 		}
 
@@ -102,12 +103,13 @@ func TestRunArgs(t *testing.T) {
 		got := runArgs(fn, "image", "/abs/no-manifest", nil, "", "")
 
 		want := []string{
-			"run", "-d", "--rm",
+			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=no-manifest",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/no-manifest:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=no-manifest",
+			"--platform", "linux/amd64",
 			"image",
 		}
 
@@ -127,13 +129,14 @@ func TestRunArgs(t *testing.T) {
 		got := runArgs(fn, "public.ecr.aws/lambda/provided:al2023", "/abs/custom-runtime", nil, "", "/abs/custom-runtime/bootstrap")
 
 		want := []string{
-			"run", "-d", "--rm",
+			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=custom-runtime",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/custom-runtime:/var/task:ro",
 			"-v", "/abs/custom-runtime/bootstrap:/var/runtime/bootstrap:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=custom-runtime",
+			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/provided:al2023",
 			"bootstrap",
 		}
@@ -155,13 +158,14 @@ func TestRunArgs(t *testing.T) {
 		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/hello", nil, "/cache/staging/hello", "")
 
 		want := []string{
-			"run", "-d", "--rm",
+			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-v", "/cache/staging/hello:/opt:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/nodejs:22",
 			"index.handler",
 		}
@@ -183,12 +187,13 @@ func TestRunArgs(t *testing.T) {
 		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/hello", nil, "", "")
 
 		want := []string{
-			"run", "-d", "--rm",
+			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/nodejs:22",
 			"index.handler",
 		}
@@ -209,7 +214,7 @@ func TestRunArgs(t *testing.T) {
 		got := runArgs(fn, "public.ecr.aws/lambda/provided:al2023", "/abs/custom-runtime", nil, "/cache/staging/custom-runtime", "/cache/staging/custom-runtime/bootstrap")
 
 		want := []string{
-			"run", "-d", "--rm",
+			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=custom-runtime",
 			"-p", "127.0.0.1:0:8080",
@@ -217,6 +222,7 @@ func TestRunArgs(t *testing.T) {
 			"-v", "/cache/staging/custom-runtime:/opt:ro",
 			"-v", "/cache/staging/custom-runtime/bootstrap:/var/runtime/bootstrap:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=custom-runtime",
+			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/provided:al2023",
 			"bootstrap",
 		}
@@ -238,12 +244,13 @@ func TestRunArgs(t *testing.T) {
 		got := runArgs(fn, "public.ecr.aws/lambda/nodejs:22", "/abs/hello", nil, "", "")
 
 		want := []string{
-			"run", "-d", "--rm",
+			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/nodejs:22",
 			"index.handler",
 		}
@@ -266,7 +273,7 @@ func TestRunArgs(t *testing.T) {
 		got := runArgs(fn, "image", "/abs/hello", fileEnv, "", "")
 
 		want := []string{
-			"run", "-d", "--rm",
+			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
 			"-p", "127.0.0.1:0:8080",
@@ -274,6 +281,7 @@ func TestRunArgs(t *testing.T) {
 			"-e", "API_KEY=secret",
 			"-e", "EXTRA=from-file-only",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"--platform", "linux/amd64",
 			"image",
 		}
 
