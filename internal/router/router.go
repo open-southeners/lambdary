@@ -15,6 +15,7 @@ import (
 	"github.com/open-southeners/lambdary/internal/cloudwatch"
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/event"
+	"github.com/open-southeners/lambdary/internal/logbus"
 	"github.com/open-southeners/lambdary/internal/metrics"
 	"github.com/open-southeners/lambdary/internal/queue"
 	"github.com/open-southeners/lambdary/internal/versions"
@@ -79,6 +80,10 @@ type Router struct {
 	// nothing is recorded and both endpoints answer 501.
 	metrics *metrics.Recorder
 
+	// logs backs /_lambdary/logs. Nil when the router was built without
+	// Options.Logs: the endpoint answers 501.
+	logs *logbus.Bus
+
 	// cloudwatch serves GetMetricData over metrics. It always exists, so a
 	// router without a recorder still answers 501 to it instead of 404.
 	cloudwatch *cloudwatch.API
@@ -94,6 +99,9 @@ type Options struct {
 	// as CloudWatch's GetMetricData. Nil disables recording; both endpoints
 	// then answer 501.
 	Metrics *metrics.Recorder
+	// Logs serves function output at /_lambdary/logs. Nil disables it; the
+	// endpoint then answers 501.
+	Logs *logbus.Bus
 }
 
 // NewWithVersions is New plus the Lambda control plane (see control.go) and
@@ -107,6 +115,7 @@ func NewServer(m *Manager, fns []discovery.Function, opts Options) *Router {
 	rt := New(m, fns).(*Router)
 	rt.versions = opts.Versions
 	rt.metrics = opts.Metrics
+	rt.logs = opts.Logs
 	rt.cloudwatch = cloudwatch.NewAPI(opts.Metrics)
 
 	if opts.Queues != nil {
@@ -168,6 +177,9 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		case healthPath:
 			rt.handleHealth(w)
+			return
+		case logsPath:
+			rt.handleLogs(w, r)
 			return
 		}
 	}

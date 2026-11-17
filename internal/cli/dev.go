@@ -20,6 +20,7 @@ import (
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/lockfile"
+	"github.com/open-southeners/lambdary/internal/logbus"
 	"github.com/open-southeners/lambdary/internal/manifest"
 	"github.com/open-southeners/lambdary/internal/metrics"
 	"github.com/open-southeners/lambdary/internal/queue"
@@ -132,6 +133,11 @@ type devServer struct {
 	// survive a structural reload.
 	metrics *metrics.Recorder
 
+	// logs buffers every function's output for `lambdary logs`; shared by
+	// every devStack (and published to by streamer) so history survives a
+	// structural reload.
+	logs *logbus.Bus
+
 	// stopTriggers stops the current stack's event sources. Only serve's
 	// loop goroutine touches it.
 	stopTriggers func()
@@ -185,6 +191,8 @@ func (d *devServer) run(ctx context.Context) error {
 	d.versions = versions.NewStore(d.cacheDir)
 	d.queues = queue.NewStore()
 	d.metrics = metrics.New()
+	d.logs = logbus.New()
+	d.streamer.bus = d.logs
 
 	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock, d.cacheDir)
 	if err != nil {
@@ -261,7 +269,7 @@ func (d *devServer) buildStack(ctx context.Context, b router.BackendResolver) (*
 	mgr := router.NewManagerWithResolver(b, fns)
 	mgr.OnStart = d.onInstanceStart
 
-	rt := router.NewServer(mgr, fns, router.Options{Versions: d.versions, Queues: d.queues, Metrics: d.metrics})
+	rt := router.NewServer(mgr, fns, router.Options{Versions: d.versions, Queues: d.queues, Metrics: d.metrics, Logs: d.logs})
 
 	return &devStack{
 		scanRoot: scanRoot,
@@ -403,6 +411,7 @@ loop:
 			// API, which would otherwise keep Shutdown waiting.
 			d.stopCurrentTriggers()
 			d.queues.StopWaiting()
+			d.logs.Close()
 
 			if watchCancel != nil {
 				watchCancel()

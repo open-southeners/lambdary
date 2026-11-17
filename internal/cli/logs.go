@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/open-southeners/lambdary/internal/logbus"
 )
 
 // noColorEnv is the de facto standard environment variable (https://no-color.org/)
@@ -43,6 +45,10 @@ type logStreamer struct {
 	sink         io.Writer
 	colorEnabled bool
 
+	// bus also receives every line, for `lambdary logs`. Nil publishes
+	// nowhere.
+	bus *logbus.Bus
+
 	mu      sync.Mutex
 	writeMu sync.Mutex
 	colors  map[string]string
@@ -54,11 +60,9 @@ type logStreamer struct {
 // unset — decided once here rather than per line, since neither condition
 // changes for the lifetime of a `dev` run.
 func newLogStreamer(sink io.Writer) *logStreamer {
-	_, noColor := os.LookupEnv(noColorEnv)
-
 	return &logStreamer{
 		sink:         sink,
-		colorEnabled: isTerminal(sink) && !noColor,
+		colorEnabled: colorEnabledFor(sink),
 		colors:       make(map[string]string),
 	}
 }
@@ -115,15 +119,32 @@ func (s *logStreamer) colorFor(name string) string {
 // concurrently streaming function, so lines from different functions never
 // interleave mid-write.
 func (s *logStreamer) writeLine(name, line, color string) {
+	if s.bus != nil {
+		s.bus.Publish(name, line)
+	}
+
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	if s.colorEnabled {
-		fmt.Fprintf(s.sink, "\x1b[%sm[%s]%s %s\n", color, name, ansiReset, line)
-		return
+	fmt.Fprintln(s.sink, formatLogLine(name, line, color, s.colorEnabled))
+}
+
+// formatLogLine renders `[<name>] <line>`, colorizing just the `[<name>]`
+// prefix with the ANSI code color when colored is set.
+func formatLogLine(name, line, color string, colored bool) string {
+	if colored {
+		return fmt.Sprintf("\x1b[%sm[%s]%s %s", color, name, ansiReset, line)
 	}
 
-	fmt.Fprintf(s.sink, "[%s] %s\n", name, line)
+	return fmt.Sprintf("[%s] %s", name, line)
+}
+
+// colorEnabledFor reports whether ANSI color should be used on w: only on a
+// terminal and only when $NO_COLOR is unset.
+func colorEnabledFor(w io.Writer) bool {
+	_, noColor := os.LookupEnv(noColorEnv)
+
+	return isTerminal(w) && !noColor
 }
 
 // isTerminal reports whether w is connected to a terminal. It only knows
