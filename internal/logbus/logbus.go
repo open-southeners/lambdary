@@ -16,7 +16,8 @@ const RingSize = 1000
 // before the bus starts dropping its lines.
 const subscriberBuffer = 256
 
-// Line is one log line of a function instance.
+// Line is one log line of a function instance. Function names the instance: a
+// plain function name for $LATEST, name:version for a published version.
 type Line struct {
 	Function string    `json:"function"`
 	Time     time.Time `json:"time"`
@@ -60,8 +61,8 @@ func (r *ring) entries() []entry {
 }
 
 type subscriber struct {
-	function string
-	ch       chan Line
+	match func(instance string) bool
+	ch    chan Line
 }
 
 // Bus buffers and broadcasts log lines. Build one with New; the zero value is
@@ -102,7 +103,7 @@ func (b *Bus) Publish(fn, text string) {
 	r.add(entry{line: line, seq: b.seq})
 
 	for s := range b.subs {
-		if s.function != "" && s.function != fn {
+		if s.match != nil && !s.match(fn) {
 			continue
 		}
 
@@ -114,17 +115,18 @@ func (b *Bus) Publish(fn, text string) {
 }
 
 // Subscribe returns a channel that first yields up to tail buffered lines of
-// fn, oldest first, then every line published afterwards. An empty fn means
-// all functions, with the buffered lines in publish order. The returned
+// the instances match accepts, oldest first, then every line published
+// afterwards by such an instance. A nil match accepts every instance. The
+// buffered lines come in publish order across instances. The returned
 // cancel function unsubscribes and closes the channel; it is safe to call
 // more than once.
-func (b *Bus) Subscribe(fn string, tail int) (<-chan Line, func()) {
+func (b *Bus) Subscribe(match func(instance string) bool, tail int) (<-chan Line, func()) {
 	b.mu.Lock()
 
 	var history []entry
 
 	for name, r := range b.rings {
-		if fn == "" || fn == name {
+		if match == nil || match(name) {
 			history = append(history, r.entries()...)
 		}
 	}
@@ -139,7 +141,7 @@ func (b *Bus) Subscribe(fn string, tail int) (<-chan Line, func()) {
 		history = history[len(history)-tail:]
 	}
 
-	s := &subscriber{function: fn, ch: make(chan Line, len(history)+subscriberBuffer)}
+	s := &subscriber{match: match, ch: make(chan Line, len(history)+subscriberBuffer)}
 	for _, e := range history {
 		s.ch <- e.line
 	}

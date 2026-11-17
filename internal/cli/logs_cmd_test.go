@@ -183,7 +183,7 @@ func TestLogStreamerPublishesToBus(t *testing.T) {
 
 	s.stream("hello", strings.NewReader("one\ntwo\n"))
 
-	ch, cancel := s.bus.Subscribe("hello", 10)
+	ch, cancel := s.bus.Subscribe(func(n string) bool { return n == "hello" }, 10)
 	defer cancel()
 
 	if l := <-ch; l.Text != "one" {

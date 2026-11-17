@@ -28,7 +28,7 @@ func TestRingEviction(t *testing.T) {
 		b.Publish("a", fmt.Sprint(i))
 	}
 
-	ch, cancel := b.Subscribe("a", RingSize*2)
+	ch, cancel := b.Subscribe(only("a"), RingSize*2)
 	defer cancel()
 
 	got := drain(ch, RingSize)
@@ -50,7 +50,7 @@ func TestTailOrderingAcrossFunctions(t *testing.T) {
 	b.Publish("a", "3")
 	b.Publish("b", "4")
 
-	ch, cancel := b.Subscribe("", 3)
+	ch, cancel := b.Subscribe(nil, 3)
 	defer cancel()
 
 	got := drain(ch, 3)
@@ -58,14 +58,14 @@ func TestTailOrderingAcrossFunctions(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 
-	chA, cancelA := b.Subscribe("a", 10)
+	chA, cancelA := b.Subscribe(only("a"), 10)
 	defer cancelA()
 
 	if got := drain(chA, 2); len(got) != 2 || got[0].Text != "1" || got[1].Text != "3" {
 		t.Fatalf("function filter got %v", got)
 	}
 
-	chZero, cancelZero := b.Subscribe("", 0)
+	chZero, cancelZero := b.Subscribe(nil, 0)
 	defer cancelZero()
 
 	select {
@@ -79,7 +79,7 @@ func TestLiveDelivery(t *testing.T) {
 	b := New()
 	b.Publish("a", "old")
 
-	ch, cancel := b.Subscribe("a", 1)
+	ch, cancel := b.Subscribe(only("a"), 1)
 	defer cancel()
 
 	b.Publish("b", "other")
@@ -93,7 +93,7 @@ func TestLiveDelivery(t *testing.T) {
 
 func TestSlowSubscriberDropsInsteadOfBlocking(t *testing.T) {
 	b := New()
-	ch, cancel := b.Subscribe("", 0)
+	ch, cancel := b.Subscribe(nil, 0)
 	defer cancel()
 
 	done := make(chan struct{})
@@ -119,7 +119,7 @@ func TestSlowSubscriberDropsInsteadOfBlocking(t *testing.T) {
 
 func TestUnsubscribeClosesChannel(t *testing.T) {
 	b := New()
-	ch, cancel := b.Subscribe("", 0)
+	ch, cancel := b.Subscribe(nil, 0)
 
 	cancel()
 	cancel()

@@ -36,6 +36,8 @@ func newLogsCmd() *cobra.Command {
 Asks the "lambdary dev" server listening on --port for its buffered function
 output (the last 1,000 lines per function) and prints the last --tail lines as
 "[function] line", for one function or, without an argument, all of them.
+A bare name includes every published version of the function; name:version
+or name:alias selects just that version, or the versions the alias routes to.
 With --follow it keeps printing new lines until interrupted.
 
 Example: lambdary logs worker -f --tail 20`,
