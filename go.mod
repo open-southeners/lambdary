@@ -6,6 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.47.5
 	github.com/aws/aws-sdk-go-v2/config v1.32.38
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.37
+	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.75.2
 	github.com/aws/aws-sdk-go-v2/service/lambda v1.102.0
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.52.7
 	github.com/aws/smithy-go v1.28.7
