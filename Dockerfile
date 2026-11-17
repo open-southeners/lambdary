@@ -1,5 +1,5 @@
 # The official Lambdary image: `lambdary dev` for a Docker Compose stack.
-# See the README's "Running in Docker Compose" section.
+# See "Running in Docker Compose" in https://docs.opensoutheners.com/lambdary/.
 
 FROM golang:1.26-alpine AS build
 
