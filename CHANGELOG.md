@@ -6,43 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-17
+
 ### Added
 
-- **Go builds**: `provided.*` Go functions are built on every start and hot reload, no hand-built `bootstrap`.
-- **Explicit function list**: `functions:` in `lambdary.yml` names each function by `go:` package or `path:`.
-- `build.go.tags` and `build.go.ldflags` in `lambdary.yml` customise Go builds.
-- Versions and aliases: `aws lambda publish-version`, `create-alias`, `update-alias` and `invoke --qualifier` work locally, including weighted canaries.
-- Official Docker image, `ghcr.io/open-southeners/lambdary`, for running `lambdary dev` in Docker Compose.
-- `LAMBDARY_NETWORK` puts function containers on a Docker network, and `LAMBDARY_HOST_ROOT` sets the host path of `--root`.
-- `aws lambda get-function-configuration`, `get-function` and `list-functions` (with `--function-version ALL` and paging) work against the dev server, and other control-plane calls Lambdary lacks answer `UnsupportedOperation` instead of a bare 404.
-- `LAMBDARY_ROOT` sets the default `--root`, so `docker exec <service> lambdary list` uses the dev server's root.
+- Go functions build automatically on start and on every hot reload.
+- `functions:` in `lambdary.yml` lists functions by Go package or path.
+- `build.go.tags` and `build.go.ldflags` customise Go builds.
+- Function versions and aliases, including weighted canaries.
+- SQS queues and `sqs` event sources, with retries and dead-letter queues.
+- Schedules in AWS's `rate()`, `cron()` and `at()` syntax.
+- Asynchronous invokes with AWS-style retries, and `DryRun`.
+- Invocation metrics, also readable through CloudWatch `GetMetricData`.
+- `lambdary logs` to follow a running dev server's function output.
+- `lambdary invoke --event sqs|s3|schedule|apigw` builds sample events.
+- `get-function`, `get-function-configuration` and `list-functions`.
+- `GET /_lambdary/health` for Docker Compose healthchecks.
+- Official Docker image, `ghcr.io/open-southeners/lambdary`.
 - `lambdary dev --host` sets the address the server listens on.
-- **SQS queues**: `lambdary dev` serves SQS's API, so producers use the AWS SDK or CLI against it, and `events: [{sqs: …}]` delivers batches to a function with `ReportBatchItemFailures`, visibility-timeout retries and a dead-letter queue.
-- **Schedules**: `events: [{schedule: "rate(1 minute)"}]`, in AWS's `rate()`, `cron()` and `at()` syntax, sends EventBridge's Scheduled Event while the server runs; `--no-schedules` turns them off.
-- `queues:` in `lambdary.yml` declares queues that only producers use.
-- **Metrics**: `GET /_lambdary/metrics?window=1h` summarises invocations, errors, throttles and durations per function.
-- CloudWatch `GetMetricData` for `AWS/Lambda` works against the dev server, so an AWS SDK reads local metrics with `AWS_ENDPOINT_URL_CLOUDWATCH`.
-- `GET /_lambdary/health` for Compose healthchecks.
-- `lambdary logs [function] [-f] [--tail N]` prints a running dev server's function output, from `GET /_lambdary/logs`.
-- **Event fixtures**: `lambdary invoke <fn> --event sqs|s3|schedule|apigw` builds a sample event, and `--set key=value` overrides its fields.
-- Asynchronous invokes: `X-Amz-Invocation-Type: Event` answers `202` and retries a failing function twice, and `DryRun` answers `204`.
+- `LAMBDARY_ROOT`, `LAMBDARY_NETWORK` and `LAMBDARY_HOST_ROOT` settings.
+- MIT license.
 
 ### Changed
 
-- `Invoke` responses now carry `X-Amz-Executed-Version`, and `X-Amz-Function-Error` when the handler fails.
-- Invoking an unknown function now reports `ResourceNotFoundException` to AWS SDKs.
-- Schedules invoke asynchronously, so a failed scheduled invocation is retried.
-- Function containers are no longer started with `--rm`; `Stop` removes them.
-- The default function `timeout` is now 900 s (AWS's maximum) instead of 30 s, and is always passed to the runtime; `timeout: 0` means no limit, and values outside 1-900 warn that they won't deploy to AWS Lambda as is.
+- Functions without `timeout` get 900 s, AWS's maximum, instead of 30 s.
+- `timeout: 0` means no limit locally, and values outside 1-900 s warn.
+- Invokes return `X-Amz-Executed-Version` and `X-Amz-Function-Error`, as on AWS.
+- Unknown functions report `ResourceNotFoundException` to AWS SDKs.
+- Unsupported AWS API calls answer `UnsupportedOperation` instead of a 404.
 
 ### Fixed
 
-- The container backend pulls and runs images for the function's `architectures` (`--platform linux/<arch>`), and re-pulls a cached image of another platform.
-- A container that exits at start now reports its exit code and last log lines, and the invoke API answers `502` `ServiceException`.
-- `lambdary logs <fn>` includes the output of published versions, and `<fn>:<version>` or `<fn>:<alias>` selects one.
-- An `Invoke` with no payload reaches the handler as `{}`, as on AWS, instead of an empty body.
-- Functions without `memory` report 128 MB, AWS's default, rather than 3008 MB.
-- Versions published before the 900 s default no longer read as `timeout: 0` (no limit); their unset timeout is 900 s again.
+- Function images run on the platform set by `architectures`.
+- A function that fails to start reports its exit code and last log lines.
+- An `Invoke` with no payload reaches the handler as `{}`, as on AWS.
+- Functions without `memory` report 128 MB, AWS's default.
 
 ## [1.1.0] - 2026-09-06
 
