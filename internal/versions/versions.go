@@ -98,8 +98,16 @@ type PublishInput struct {
 // BootstrapBuild compiles a Go function's bootstrap binary to out.
 type BootstrapBuild func(ctx context.Context, fn discovery.Function, out string) error
 
+// stateFormat is the state.json format this code writes. Format 1, which
+// carries no "format" field, stored manifest.Timeout as a plain int, so an
+// unset timeout was saved as 0; format 2 stores it as a nullable number, where
+// 0 means no limit. load reads format 1 compatibly.
+const stateFormat = 2
+
 // state is one function's state.json.
 type state struct {
+	// Format is the state.json format version; absent (0) in format 1.
+	Format int `json:"format,omitempty"`
 	// NextVersion is never decremented: AWS never reuses a version number.
 	NextVersion int              `json:"next_version"`
 	RevisionID  string           `json:"revision_id"`
@@ -419,7 +427,24 @@ func (s *Store) load(name string) (*state, error) {
 		st.Aliases = map[string]Alias{}
 	}
 
+	st.upgrade()
+
 	return st, nil
+}
+
+// upgrade brings a state read from an older format up to stateFormat in
+// memory. Format 1 could not tell an unset timeout from 0 and saved both as
+// 0, so a 0 there means unset (the default), not no limit.
+func (st *state) upgrade() {
+	if st.Format < 2 {
+		for i := range st.Versions {
+			if m := st.Versions[i].Manifest; m != nil && m.Timeout != nil && *m.Timeout == 0 {
+				m.Timeout = nil
+			}
+		}
+	}
+
+	st.Format = stateFormat
 }
 
 // save writes name's state atomically, so a crash never leaves a torn
@@ -429,6 +454,8 @@ func (s *Store) save(name string, st *state) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("versions: %s: %w", name, err)
 	}
+
+	st.Format = stateFormat
 
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
