@@ -322,7 +322,7 @@ func TestManifestEnv(t *testing.T) {
 		fn := discovery.Function{Name: "minimal", Manifest: &manifest.Manifest{}}
 
 		got := manifestEnv(fn, nil)
-		want := []string{"AWS_LAMBDA_FUNCTION_NAME=minimal"}
+		want := []string{"AWS_LAMBDA_FUNCTION_NAME=minimal", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128"}
 
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("manifestEnv() =\n%v\nwant\n%v", got, want)
@@ -333,7 +333,7 @@ func TestManifestEnv(t *testing.T) {
 		fn := discovery.Function{Name: "no-manifest"}
 
 		got := manifestEnv(fn, nil)
-		want := []string{"AWS_LAMBDA_FUNCTION_NAME=no-manifest"}
+		want := []string{"AWS_LAMBDA_FUNCTION_NAME=no-manifest", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128"}
 
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("manifestEnv() =\n%v\nwant\n%v", got, want)
@@ -355,6 +355,7 @@ func TestManifestEnv(t *testing.T) {
 			"API_KEY=secret",
 			"EXTRA=from-file-only",
 			"AWS_LAMBDA_FUNCTION_NAME=hello",
+			"AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 		}
 
 		if !reflect.DeepEqual(got, want) {

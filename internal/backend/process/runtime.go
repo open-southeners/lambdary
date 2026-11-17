@@ -213,8 +213,8 @@ func rieArgs(invokePort, rapiPort int, runtimeName string, runtimeArgs []string)
 // it launches): fileEnv (the function's already-loaded local.env_file, or
 // nil when it has none) merged under the manifest's own environment block
 // (manifest wins on conflict — see envMerge), then AWS_LAMBDA_FUNCTION_NAME,
-// then AWS_LAMBDA_FUNCTION_TIMEOUT and AWS_LAMBDA_FUNCTION_MEMORY_SIZE when
-// the manifest sets them — mirroring container/argv.go's runArgs env
+// then AWS_LAMBDA_FUNCTION_TIMEOUT when the manifest sets it and
+// AWS_LAMBDA_FUNCTION_MEMORY_SIZE (128 unless it sets one) — mirroring container/argv.go's runArgs env
 // handling for the container backend. A pure function so tests can assert
 // it without inheriting the real process's environment. The RIE sets
 // AWS_LAMBDA_RUNTIME_API on its runtime child itself; this package's shims
@@ -243,9 +243,12 @@ func manifestEnv(fn discovery.Function, fileEnv map[string]string) []string {
 		env = append(env, fmt.Sprintf("AWS_LAMBDA_FUNCTION_TIMEOUT=%d", m.Timeout))
 	}
 
+	memory := manifest.DefaultMemory
 	if m.Memory > 0 {
-		env = append(env, fmt.Sprintf("AWS_LAMBDA_FUNCTION_MEMORY_SIZE=%d", m.Memory))
+		memory = m.Memory
 	}
+
+	env = append(env, fmt.Sprintf("AWS_LAMBDA_FUNCTION_MEMORY_SIZE=%d", memory))
 
 	return env
 }

@@ -108,10 +108,17 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 		args = append(args, "-e", fmt.Sprintf("AWS_LAMBDA_FUNCTION_TIMEOUT=%d", m.Timeout))
 	}
 
+	// The container is only capped when the manifest sets a memory size, but
+	// the runtime always reports one, defaulting to AWS's.
+	memory := manifest.DefaultMemory
+
 	if m.Memory > 0 {
+		memory = m.Memory
+
 		args = append(args, "--memory", fmt.Sprintf("%dm", m.Memory))
-		args = append(args, "-e", fmt.Sprintf("AWS_LAMBDA_FUNCTION_MEMORY_SIZE=%d", m.Memory))
 	}
+
+	args = append(args, "-e", fmt.Sprintf("AWS_LAMBDA_FUNCTION_MEMORY_SIZE=%d", memory))
 
 	// Always pinned, defaulting to x86_64 like AWS: a run that leaves the
 	// platform to whatever variant is cached under the tag would mismatch

@@ -19,6 +19,10 @@ import (
 // method's doc comment for the intended layering order.
 const DefaultPayload = "2.0"
 
+// DefaultMemory is the memory size in MB a function runs with when the
+// manifest sets none, as AWS Lambda defaults it.
+const DefaultMemory = 128
+
 // DefaultInvokeMode is the Function URL invoke mode assumed when a
 // manifest sets url.path but not url.invoke_mode, mirroring AWS's own
 // Function URL default. It is filled in by (*Manifest).ApplyBuiltinDefaults,
