@@ -182,3 +182,27 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   already names a file.
 - **Fix:** part of the event fixtures work: a separate flag (or a
   `fixture:` prefix) that builds the event from `internal/triggers`' builders.
+
+## API Gateway time layout duplicated in fixtures
+
+- **Where:** `internal/fixtures/fixtures.go` (apigw builder) and
+  `internal/event/request.go` (`awsTimeLayout`, `placeholderAPIID`,
+  `placeholderDomainName`).
+- **What:** the apigw fixture repeats the `requestContext.time` layout and its
+  own placeholder API id and domain, because `internal/event` keeps them
+  unexported. A change to one would not reach the other.
+- **Fix:** export the layout and placeholders from `internal/event` and use
+  them in the fixture. Low priority.
+
+## Throttles are almost never recorded locally
+
+- **Where:** `internal/router/router.go` (`attempt`), `internal/router/manager.go`
+  (`WithLock`).
+- **What:** an invocation counts as throttled only when its deadline has
+  already passed by the time it gets the function's invoke lock. Every invoke
+  of a function has the same timeout and the lock holder gives up at its own,
+  earlier deadline, so a waiter almost always gets the lock in time. The
+  Throttles metric therefore reads 0 in practice.
+- **Fix:** make `WithLock` context-aware (give up and report a throttle when
+  the caller's context ends while waiting), or bound the wait for the lock
+  separately from the invoke timeout.
