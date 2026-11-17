@@ -213,3 +213,14 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   project's running function with the same name would be counted as theirs.
 - **Fix:** also filter on the `lambdary.dir` label, as `e2e_test.go`'s
   `waitForNoLabeledContainers` now does.
+
+## First publish after upgrading may create one extra version
+
+- **Where:** `internal/versions/publish.go` (`hashConfig`).
+- **What:** the config hash is taken over the marshalled manifest. Versions
+  published before snapshot format 2 hashed an unset timeout as `0`; new code
+  hashes it as `null`. Publishing an unchanged function once after upgrading
+  therefore misses the "unchanged since last version" check and creates one
+  extra version.
+- **Fix:** hash the effective timeout (`TimeoutSeconds()`) rather than the raw
+  field. Harmless otherwise.

@@ -87,7 +87,7 @@ lambdary logs [fn] [-f] [--tail N] [--port P]  # a running dev server's function
 lambdary init <name> [--runtime <id>]        # scaffold a function
 ```
 
-All commands accept `--root <dir>` (default `.`).
+All commands accept `--root <dir>` (default `$LAMBDARY_ROOT`, else `.`).
 
 ## Configuration
 
@@ -206,9 +206,11 @@ aws lambda invoke --function-name notify --qualifier live out.json
 ```
 
 Supported calls are `PublishVersion`, `ListVersionsByFunction`, `CreateAlias`,
-`GetAlias`, `UpdateAlias`, and `Invoke` with a version number or alias as its
+`GetAlias`, `UpdateAlias`, `GetFunctionConfiguration`, `GetFunction` (its `Code`
+location is empty) and `Invoke` with a version number or alias as its
 qualifier. Each invoke response names the version that ran in
-`X-Amz-Executed-Version`.
+`X-Amz-Executed-Version`. Any other Lambda control-plane call answers `501`
+`UnsupportedOperation`.
 
 A version is an immutable copy of the function under `.lambdary/versions/`, so
 it survives restarts and keeps running the same code however you edit the
@@ -378,6 +380,12 @@ if it can't inspect itself, such as when you set `hostname:` on the service:
 |---|---|
 | `LAMBDARY_NETWORK` | Docker network for function containers. Required when the service is on several networks. Also works outside a container. |
 | `LAMBDARY_HOST_ROOT` | Host path of the `--root` directory. |
+| `LAMBDARY_ROOT` | Default for `--root`, an explicit `--root` still wins. |
+
+`docker exec` runs in `/workspace`, not in the server's `--root`, so
+`docker exec lambdary lambdary list` would scan the wrong folder. Set
+`LAMBDARY_ROOT: functions` in the service's `environment:` instead of passing
+`--root`, and the server and every command you exec use the same root.
 
 The image includes Go and downloads the Go version your project asks for. Only
 the container backend runs from it, because it has no Node, Python or Ruby. The
