@@ -335,7 +335,7 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, ref strin
 		return
 	}
 
-	status, respBody, contentType, err := rt.invoke(r.Context(), target, body, meta)
+	status, respBody, contentType, err := rt.invoke(r.Context(), target, emptyPayloadAsObject(body), meta)
 	if err != nil {
 		if errors.Is(err, backend.ErrStartFailed) {
 			writeAWSServiceError(w, http.StatusBadGateway, err.Error())

@@ -60,7 +60,7 @@ func (rt *Router) InvokeAsync(_ context.Context, ref string, payload []byte) err
 		ref:      ref,
 		target:   target,
 		executed: executed,
-		payload:  payload,
+		payload:  emptyPayloadAsObject(payload),
 		meta:     rt.invocationMeta(name, executed, qualifier, ""),
 	})
 }
@@ -180,7 +180,7 @@ func (rt *Router) handleAsyncInvoke(w http.ResponseWriter, r *http.Request, ref 
 	}
 
 	a.ref = ref
-	a.payload = body
+	a.payload = emptyPayloadAsObject(body)
 
 	if err := rt.enqueue(a); err != nil {
 		writeAWSError(w, http.StatusServiceUnavailable, errService, err.Error())

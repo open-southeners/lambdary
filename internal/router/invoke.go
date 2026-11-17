@@ -29,12 +29,23 @@ func (rt *Router) Invoke(ctx context.Context, ref string, payload []byte) (Invok
 		return InvokeResult{}, err
 	}
 
-	status, body, _, err := rt.invoke(ctx, target, payload, rt.invocationMeta(name, executed, qualifier, ""))
+	status, body, _, err := rt.invoke(ctx, target, emptyPayloadAsObject(payload), rt.invocationMeta(name, executed, qualifier, ""))
 	if err != nil {
 		return InvokeResult{}, err
 	}
 
 	return InvokeResult{Payload: body, ExecutedVersion: executed, FunctionError: isFunctionError(status, body)}, nil
+}
+
+// emptyPayloadAsObject returns {} for an empty payload, as AWS Lambda
+// delivers to the handler when an Invoke has no Payload. A payload with any
+// bytes, whitespace included, is returned unchanged.
+func emptyPayloadAsObject(payload []byte) []byte {
+	if len(payload) == 0 {
+		return []byte("{}")
+	}
+
+	return payload
 }
 
 // resolveRef checks that name is exactly one discovered function and resolves
