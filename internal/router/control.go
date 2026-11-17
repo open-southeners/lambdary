@@ -42,8 +42,8 @@ const (
 // lastModifiedFormat is the timestamp layout AWS's API returns.
 const lastModifiedFormat = "2006-01-02T15:04:05.000-0700"
 
-// defaultListPage and maxListPage bound ListVersionsByFunction's MaxItems, as
-// on AWS.
+// defaultListPage and maxListPage bound MaxItems of ListVersionsByFunction and
+// ListFunctions, as on AWS.
 const (
 	defaultListPage = 50
 	maxListPage     = 10000
@@ -102,7 +102,8 @@ type aliasRequest struct {
 // handleControl serves the control-plane routes, reporting false for any
 // other request so ServeHTTP keeps looking.
 func (rt *Router) handleControl(w http.ResponseWriter, r *http.Request) bool {
-	if !strings.HasPrefix(r.URL.Path, invokePrefix) {
+	// The bare collection, /2015-03-31/functions/, names no function.
+	if !strings.HasPrefix(r.URL.Path, invokePrefix) || r.URL.Path == invokePrefix {
 		return false
 	}
 
@@ -159,11 +160,91 @@ func (rt *Router) handleControl(w http.ResponseWriter, r *http.Request) bool {
 // Lambdary lacks rather than a generic not-found. It reports false for any
 // request outside that prefix.
 func handleUnsupportedControl(w http.ResponseWriter, r *http.Request) bool {
-	if !strings.HasPrefix(r.URL.Path, invokePrefix) {
+	if !strings.HasPrefix(r.URL.Path, controlPrefix) {
 		return false
 	}
 
 	writeAWSError(w, http.StatusNotImplemented, errUnsupported, fmt.Sprintf("Lambdary does not implement %s %s", r.Method, r.URL.Path))
+
+	return true
+}
+
+// controlPrefix is the root of every Lambda control-plane path, the functions
+// collection and the other resources (layers, event source mappings, ...)
+// alike.
+const controlPrefix = "/2015-03-31/"
+
+// listFunctionsPath is ListFunctions's path, with or without its trailing
+// slash.
+const listFunctionsPath = "/2015-03-31/functions"
+
+// handleListFunctions serves ListFunctions, reporting false for any other
+// request. It runs after route matching, so a function URL route is never
+// shadowed by it.
+func (rt *Router) handleListFunctions(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet || strings.TrimSuffix(r.URL.Path, "/") != listFunctionsPath {
+		return false
+	}
+
+	start, limit, ok := pageParams(w, r)
+	if !ok {
+		return true
+	}
+
+	// FunctionVersion=ALL adds every published version after its function's
+	// $LATEST; otherwise only $LATEST is listed, as on AWS.
+	all := r.URL.Query().Get("FunctionVersion") == "ALL"
+
+	var configs []functionConfiguration
+
+	for _, name := range rt.names {
+		fns := rt.byName[name]
+
+		// A name shared by several functions is skipped: a list has no
+		// single function to describe, and failing it would hide the rest.
+		// Calls that address the name still answer the 409 collision.
+		if len(fns) != 1 {
+			continue
+		}
+
+		latest, err := rt.latestConfiguration(fns[0])
+		if err != nil {
+			writeStoreError(w, err)
+			return true
+		}
+
+		configs = append(configs, latest)
+
+		if !all || rt.versions == nil {
+			continue
+		}
+
+		published, err := rt.versions.List(name)
+		if err != nil {
+			writeStoreError(w, err)
+			return true
+		}
+
+		for _, v := range published {
+			configs = append(configs, versionConfiguration(name, v))
+		}
+	}
+
+	resp := struct {
+		Functions  []functionConfiguration `json:"Functions"`
+		NextMarker string                  `json:"NextMarker,omitempty"`
+	}{Functions: []functionConfiguration{}}
+
+	if start < len(configs) {
+		end := min(start+limit, len(configs))
+		resp.Functions = configs[start:end]
+
+		if end < len(configs) {
+			resp.NextMarker = strconv.Itoa(end)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 
 	return true
 }
@@ -455,8 +536,8 @@ func parseFunctionRef(ref string) (name, qualifier string) {
 	return name, qualifier
 }
 
-// pageParams reads ListVersionsByFunction's paging parameters, answering 400
-// itself when they are invalid. Marker is the index to resume from.
+// pageParams reads the paging parameters of ListVersionsByFunction and
+// ListFunctions, answering 400 itself when they are invalid. Marker is the index to resume from.
 func pageParams(w http.ResponseWriter, r *http.Request) (start, limit int, ok bool) {
 	limit = defaultListPage
 
@@ -508,9 +589,15 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 // and CodeSize unset: computing them means a Go build or a full tree hash on
 // every list, for values nothing reads on $LATEST.
 func (rt *Router) latestConfiguration(fn discovery.Function) (functionConfiguration, error) {
-	revision, err := rt.versions.LatestRevision(fn.Name)
-	if err != nil {
-		return functionConfiguration{}, err
+	// Without a version store there is no revision to report.
+	var revision string
+
+	if rt.versions != nil {
+		var err error
+
+		if revision, err = rt.versions.LatestRevision(fn.Name); err != nil {
+			return functionConfiguration{}, err
+		}
 	}
 
 	modified := time.Now()

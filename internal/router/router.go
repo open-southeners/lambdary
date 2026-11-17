@@ -256,6 +256,10 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if rt.handleListFunctions(w, r) {
+		return
+	}
+
 	if handleUnsupportedControl(w, r) {
 		return
 	}
