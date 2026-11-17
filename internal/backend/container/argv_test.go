@@ -31,6 +31,7 @@ func TestRunArgs(t *testing.T) {
 			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
+			"--label", "lambdary.dir=/root/hello",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-e", "API_KEY=secret",
@@ -52,6 +53,7 @@ func TestRunArgs(t *testing.T) {
 	t.Run("x86_64 architecture maps to linux/amd64", func(t *testing.T) {
 		fn := discovery.Function{
 			Name:     "hello",
+			Dir:      "/root/hello",
 			Manifest: &manifest.Manifest{Architectures: []string{"x86_64"}},
 		}
 
@@ -61,6 +63,7 @@ func TestRunArgs(t *testing.T) {
 			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
+			"--label", "lambdary.dir=/root/hello",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
@@ -76,6 +79,7 @@ func TestRunArgs(t *testing.T) {
 	t.Run("minimal function: no env, memory, architectures, or handler", func(t *testing.T) {
 		fn := discovery.Function{
 			Name:     "minimal",
+			Dir:      "/root/minimal",
 			Manifest: &manifest.Manifest{},
 		}
 
@@ -85,6 +89,7 @@ func TestRunArgs(t *testing.T) {
 			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=minimal",
+			"--label", "lambdary.dir=/root/minimal",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/minimal:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=minimal",
@@ -98,7 +103,7 @@ func TestRunArgs(t *testing.T) {
 	})
 
 	t.Run("nil manifest behaves like an empty one", func(t *testing.T) {
-		fn := discovery.Function{Name: "no-manifest"}
+		fn := discovery.Function{Name: "no-manifest", Dir: "/root/no-manifest"}
 
 		got := runArgs(fn, "image", "/abs/no-manifest", nil, "", "")
 
@@ -106,6 +111,7 @@ func TestRunArgs(t *testing.T) {
 			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=no-manifest",
+			"--label", "lambdary.dir=/root/no-manifest",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/no-manifest:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=no-manifest",
@@ -132,6 +138,7 @@ func TestRunArgs(t *testing.T) {
 			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=custom-runtime",
+			"--label", "lambdary.dir=/root/custom-runtime",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/custom-runtime:/var/task:ro",
 			"-v", "/abs/custom-runtime/bootstrap:/var/runtime/bootstrap:ro",
@@ -161,6 +168,7 @@ func TestRunArgs(t *testing.T) {
 			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
+			"--label", "lambdary.dir=/root/hello",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-v", "/cache/staging/hello:/opt:ro",
@@ -190,6 +198,7 @@ func TestRunArgs(t *testing.T) {
 			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
+			"--label", "lambdary.dir=/root/hello",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
@@ -217,6 +226,7 @@ func TestRunArgs(t *testing.T) {
 			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=custom-runtime",
+			"--label", "lambdary.dir=/root/custom-runtime",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/custom-runtime:/var/task:ro",
 			"-v", "/cache/staging/custom-runtime:/opt:ro",
@@ -247,6 +257,7 @@ func TestRunArgs(t *testing.T) {
 			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
+			"--label", "lambdary.dir=/root/hello",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
@@ -263,6 +274,7 @@ func TestRunArgs(t *testing.T) {
 	t.Run("fileEnv is folded in under manifest environment", func(t *testing.T) {
 		fn := discovery.Function{
 			Name: "hello",
+			Dir:  "/root/hello",
 			Manifest: &manifest.Manifest{
 				Environment: map[string]string{"API_KEY": "secret"},
 			},
@@ -276,6 +288,7 @@ func TestRunArgs(t *testing.T) {
 			"run", "-d",
 			"--label", "lambdary=1",
 			"--label", "lambdary.function=hello",
+			"--label", "lambdary.dir=/root/hello",
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-e", "API_KEY=secret",

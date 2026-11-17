@@ -77,7 +77,7 @@ func TestE2EGoModule(t *testing.T) {
 			t.Errorf("cleanup StopAll() unexpected error: %v", err)
 		}
 
-		waitForNoLabeledContainers(t, runner, "docker ps after StopAll()")
+		waitForNoLabeledContainers(t, runner, scanRoot, "docker ps after StopAll()")
 	})
 
 	client := &http.Client{Timeout: 120 * time.Second}

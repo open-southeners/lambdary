@@ -55,6 +55,10 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 		"run", "-d",
 		"--label", "lambdary=1",
 		"--label", "lambdary.function=" + fn.Name,
+		// lambdary.dir lets a caller tell the containers of one project root
+		// from another's (function names alone can repeat across projects),
+		// e.g. the E2E tests assert only on their own fixture root.
+		"--label", "lambdary.dir=" + fn.Dir,
 		"-p", publishSpec,
 		"-v", fnDir + ":/var/task:ro",
 	}

@@ -82,7 +82,7 @@ func TestE2EStream(t *testing.T) {
 			t.Errorf("cleanup StopAll() unexpected error: %v", err)
 		}
 
-		waitForNoLabeledContainers(t, runner, "docker ps after StopAll()")
+		waitForNoLabeledContainers(t, runner, scanRoot, "docker ps after StopAll()")
 	})
 
 	// Same generous headroom as TestE2E: a cold image pull is possible on

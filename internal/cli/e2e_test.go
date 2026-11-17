@@ -89,7 +89,7 @@ func TestE2E(t *testing.T) {
 			t.Errorf("cleanup StopAll() unexpected error: %v", err)
 		}
 
-		waitForNoLabeledContainers(t, runner, "docker ps after StopAll()")
+		waitForNoLabeledContainers(t, runner, scanRoot, "docker ps after StopAll()")
 	})
 
 	// The first invocation of a fixture starts its container: the image
@@ -861,13 +861,15 @@ func containsString(ss []string, s string) bool {
 }
 
 // waitForNoLabeledContainers polls `docker ps -a --filter label=lambdary=1`
-// every 250ms until it reports no containers or a 10s deadline expires,
-// failing the test with the last output only in the latter case. A
-// container run with --rm (as ours are) is removed asynchronously after
-// `docker stop` returns, so an instant check right after StopAll can still
-// briefly see it — polling avoids that flake instead of asserting on a
-// single point-in-time snapshot.
-func waitForNoLabeledContainers(t *testing.T, runner backend.ExecRunner, msgPrefix string) {
+// every 250ms until no container whose lambdary.dir label lies under
+// scanRoot is left, or a 10s deadline expires, failing the test with the
+// last output only in the latter case. Containers of other Lambdary
+// projects on the same Docker host (a developer's own dev stack) are
+// ignored: only the ones this test's fixture root could have started count.
+// Containers are not run with --rm; Stop removes them itself, and since -a
+// lists stopped ones too, a leftover exited container fails here. The poll
+// covers a removal still settling right after StopAll.
+func waitForNoLabeledContainers(t *testing.T, runner backend.ExecRunner, scanRoot, msgPrefix string) {
 	t.Helper()
 
 	const (
@@ -875,18 +877,27 @@ func waitForNoLabeledContainers(t *testing.T, runner backend.ExecRunner, msgPref
 		pollTimeout  = 10 * time.Second
 	)
 
+	prefix := filepath.Clean(scanRoot) + string(filepath.Separator)
 	deadline := time.Now().Add(pollTimeout)
 
-	var last string
+	var last []string
 	for {
 		out, err := runner.Run(context.Background(), "docker", "ps", "-a",
-			"--filter", "label=lambdary=1", "--format", "{{.ID}}")
+			"--filter", "label=lambdary=1", "--format", `{{.ID}} {{.Label "lambdary.dir"}}`)
 		if err != nil {
 			t.Fatalf("docker ps unexpected error: %v", err)
 		}
 
-		last = strings.TrimSpace(string(out))
-		if last == "" {
+		last = last[:0]
+
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			_, dir, _ := strings.Cut(line, " ")
+			if strings.HasPrefix(filepath.Clean(dir)+string(filepath.Separator), prefix) {
+				last = append(last, line)
+			}
+		}
+
+		if len(last) == 0 {
 			return
 		}
 
@@ -897,5 +908,5 @@ func waitForNoLabeledContainers(t *testing.T, runner backend.ExecRunner, msgPref
 		time.Sleep(pollInterval)
 	}
 
-	t.Errorf("%s = %q, want no lambdary containers left", msgPrefix, last)
+	t.Errorf("%s = %q, want no lambdary containers left under %s", msgPrefix, last, scanRoot)
 }
