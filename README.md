@@ -1,5 +1,7 @@
 # Lambdary
 
+[![Lambdary](https://opensoutheners.com/gh_card/lambdary?stats=version,platforms,license,ci&platforms=Linux,macOS&extra%5Bbrand%3Ago%5D=Go%20*1.26%2B*&extra%5Bbrand%3Adocker%5D=Docker%20*optional*)](https://docs.opensoutheners.com/lambdary/)
+
 Local development server for AWS Lambda functions. Point it at a folder of
 function directories and get one local HTTP server that runs each function on
 the same runtimes AWS uses, through AWS's own Runtime Interface Emulator: in

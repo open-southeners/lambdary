@@ -202,7 +202,9 @@ jobs:
     with:
       tag: ${{ github.ref_name }}
       notes_source: changelog
-      banner_url: https://opensoutheners.com/gh_card/{repo}
+      # Same card as the README; version is pinned because the card caches
+      # GitHub stats for hours and would still show the previous release.
+      banner_url: https://opensoutheners.com/gh_card/{repo}?version={version}&stats=version,platforms,license,ci&platforms=Linux,macOS&extra%5Bbrand%3Ago%5D=Go%20*1.26%2B*&extra%5Bbrand%3Adocker%5D=Docker%20*optional*
       install_title: 🍺 Homebrew
       install_command: brew install open-southeners/tap/lambdary
       buttons: >-
