@@ -19,7 +19,7 @@ func TestLoad(t *testing.T) {
 			Name:          "function_a",
 			Runtime:       "nodejs22.x",
 			Handler:       "index.handler",
-			Timeout:       30,
+			Timeout:       new(30),
 			Memory:        512,
 			Architectures: []string{"arm64"},
 			Layers:        []string{"arn:aws:lambda:eu-west-1:534081306603:layer:php-83:1", "../shared-layer"},

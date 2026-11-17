@@ -155,8 +155,23 @@ func TestFunctionTimeout(t *testing.T) {
 		Manifest: nil,
 	}
 	timeout := functionTimeout(fn)
-	if timeout != defaultInvokeHTTPTimeout {
-		t.Errorf("expected default timeout %v, got %v", defaultInvokeHTTPTimeout, timeout)
+	if want := 900*time.Second + invokeHTTPMargin; timeout != want {
+		t.Errorf("expected default timeout %v, got %v", want, timeout)
+	}
+}
+
+// TestFunctionTimeoutNoLimit checks that timeout 0 (no limit) leaves the
+// invoke HTTP call without a deadline, and that a timeout above AWS's
+// maximum is honoured.
+func TestFunctionTimeoutNoLimit(t *testing.T) {
+	unlimited := discovery.Function{Manifest: &manifest.Manifest{Timeout: new(0)}}
+	if got := functionTimeout(unlimited); got != 0 {
+		t.Errorf("functionTimeout(timeout 0) = %v, want 0 (no deadline)", got)
+	}
+
+	long := discovery.Function{Manifest: &manifest.Manifest{Timeout: new(1800)}}
+	if want := 1800*time.Second + invokeHTTPMargin; functionTimeout(long) != want {
+		t.Errorf("functionTimeout(timeout 1800) = %v, want %v", functionTimeout(long), want)
 	}
 }
 
@@ -164,11 +179,11 @@ func TestFunctionTimeout(t *testing.T) {
 func TestFunctionTimeoutWithManifest(t *testing.T) {
 	fn := discovery.Function{
 		Manifest: &manifest.Manifest{
-			Timeout: 120,
+			Timeout: new(120),
 		},
 	}
 	timeout := functionTimeout(fn)
-	expected := 120 * time.Second
+	expected := 120*time.Second + invokeHTTPMargin
 	if timeout != expected {
 		t.Errorf("expected timeout %v, got %v", expected, timeout)
 	}

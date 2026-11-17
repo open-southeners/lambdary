@@ -702,7 +702,7 @@ func TestRouterRouteBarePathIsRoot(t *testing.T) {
 
 func TestRouterRouteTimeout(t *testing.T) {
 	slow := fn("slow")
-	slow.Manifest = &manifest.Manifest{Timeout: 1}
+	slow.Manifest = &manifest.Manifest{Timeout: new(1)}
 
 	b := newFakeBackend()
 	b.newInstance = func(string) *fakeInstance {
@@ -845,7 +845,7 @@ func TestRouterInvokeTimeout(t *testing.T) {
 	// Manifest.Timeout is whole seconds (AWS Lambda's own unit), so 1s is
 	// the smallest manifest timeout expressible; sleep well past it.
 	slow := fn("slow")
-	slow.Manifest = &manifest.Manifest{Timeout: 1}
+	slow.Manifest = &manifest.Manifest{Timeout: new(1)}
 
 	b := newFakeBackend()
 	b.newInstance = func(string) *fakeInstance {
@@ -865,6 +865,37 @@ func TestRouterInvokeTimeout(t *testing.T) {
 	}
 	if got := b.startCount("slow"); got != 1 {
 		t.Errorf("backend.Start called %d times, want 1 (a slow function is not a dead one; a timeout must not evict)", got)
+	}
+}
+
+func TestRouterInvokeNoLimit(t *testing.T) {
+	// Timeout 0 means no limit: a function slower than any 1s deadline
+	// still answers, and an unset timeout (900s) does too.
+	for name, m := range map[string]*manifest.Manifest{
+		"unlimited": {Timeout: new(0)},
+		"default":   {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := fn(name)
+			f.Manifest = m
+
+			b := newFakeBackend()
+			b.newInstance = func(string) *fakeInstance {
+				return newFakeInstance(http.StatusOK, []byte("ok"), "", 1200*time.Millisecond)
+			}
+
+			fns := []discovery.Function{f}
+			h := New(NewManager(b, fns), fns)
+
+			req := httptest.NewRequest(http.MethodPost, "/2015-03-31/functions/"+name+"/invocations", strings.NewReader("{}"))
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

@@ -52,7 +52,7 @@ func newFn(t *testing.T, name string) discovery.Function {
 		Runtime:  "nodejs22.x",
 		Handler:  "index.handler",
 		Backend:  "process",
-		Manifest: &manifest.Manifest{Timeout: 5},
+		Manifest: &manifest.Manifest{Timeout: new(5)},
 	}
 }
 
@@ -98,14 +98,14 @@ func TestPublishNumbersAndDedup(t *testing.T) {
 	}
 
 	// Changed manifest config.
-	fn.Manifest = &manifest.Manifest{Timeout: 9}
+	fn.Manifest = &manifest.Manifest{Timeout: new(9)}
 	v3 := publish(t, s, fn)
 	if v3.Version != "3" {
 		t.Errorf("after config change version = %q, want 3", v3.Version)
 	}
 
 	// Changed environment alone.
-	fn.Manifest = &manifest.Manifest{Timeout: 9, Environment: map[string]string{"A": "1"}}
+	fn.Manifest = &manifest.Manifest{Timeout: new(9), Environment: map[string]string{"A": "1"}}
 	if v4 := publish(t, s, fn); v4.Version != "4" {
 		t.Errorf("after env change version = %q, want 4", v4.Version)
 	}
@@ -792,7 +792,7 @@ func TestFunction(t *testing.T) {
 	if got.Runtime != fn.Runtime || got.Handler != fn.Handler || got.Backend != fn.Backend || got.Image != "img" {
 		t.Errorf("Function fields = %+v", got)
 	}
-	if got.Manifest == nil || got.Manifest.Timeout != 5 {
+	if got.Manifest == nil || got.Manifest.TimeoutSeconds() != 5 {
 		t.Errorf("Manifest = %+v", got.Manifest)
 	}
 

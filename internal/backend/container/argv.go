@@ -104,9 +104,7 @@ func runArgs(fn discovery.Function, image, fnDir string, fileEnv map[string]stri
 		args = append(args, "-e", "AWS_LAMBDA_FUNCTION_VERSION="+fn.Version)
 	}
 
-	if m.Timeout > 0 {
-		args = append(args, "-e", fmt.Sprintf("AWS_LAMBDA_FUNCTION_TIMEOUT=%d", m.Timeout))
-	}
+	args = append(args, "-e", fmt.Sprintf("AWS_LAMBDA_FUNCTION_TIMEOUT=%d", m.RuntimeTimeoutSeconds()))
 
 	// The container is only capped when the manifest sets a memory size, but
 	// the runtime always reports one, defaulting to AWS's.

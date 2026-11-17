@@ -23,6 +23,21 @@ const DefaultPayload = "2.0"
 // manifest sets none, as AWS Lambda defaults it.
 const DefaultMemory = 128
 
+// DefaultTimeout is the timeout in seconds a function runs with when the
+// manifest and the project defaults set none: AWS Lambda's maximum, so
+// developers need not tune it.
+const DefaultTimeout = 900
+
+// MaxAWSTimeout is the longest timeout in seconds AWS Lambda accepts; its
+// accepted range is 1 to MaxAWSTimeout.
+const MaxAWSTimeout = 900
+
+// NoLimitRuntimeTimeout is the AWS_LAMBDA_FUNCTION_TIMEOUT value, in
+// seconds, handed to the runtime when the timeout is 0 (no limit): one
+// year, which the Runtime Interface Emulator parses and converts to a
+// time.Duration without overflow, and which no local invoke outlasts.
+const NoLimitRuntimeTimeout = 365 * 24 * 60 * 60
+
 // DefaultInvokeMode is the Function URL invoke mode assumed when a
 // manifest sets url.path but not url.invoke_mode, mirroring AWS's own
 // Function URL default. It is filled in by (*Manifest).ApplyBuiltinDefaults,
@@ -81,8 +96,10 @@ type Manifest struct {
 	// Handler is the function handler, in the runtime's own notation
 	// (e.g. "index.handler").
 	Handler string `yaml:"handler,omitempty"`
-	// Timeout is the invocation timeout in seconds. 0 means unset.
-	Timeout int `yaml:"timeout,omitempty"`
+	// Timeout is the invocation timeout in seconds. nil means unset, which
+	// runs as DefaultTimeout; an explicit 0 means no limit locally. See
+	// TimeoutSeconds and TimeoutWarning.
+	Timeout *int `yaml:"timeout,omitempty"`
 	// Memory is the memory limit in MB, advisory locally. 0 means unset.
 	Memory int `yaml:"memory,omitempty"`
 	// Architectures lists target CPU architectures (e.g. "arm64").
@@ -178,6 +195,43 @@ func (m *Manifest) ApplyBuiltinDefaults() {
 	}
 }
 
+// TimeoutSeconds returns the timeout in seconds the function runs with:
+// DefaultTimeout when unset, 0 for no limit, else the configured value.
+func (m *Manifest) TimeoutSeconds() int {
+	if m == nil || m.Timeout == nil {
+		return DefaultTimeout
+	}
+
+	return *m.Timeout
+}
+
+// RuntimeTimeoutSeconds returns the AWS_LAMBDA_FUNCTION_TIMEOUT value for
+// the runtime: TimeoutSeconds, with 0 (no limit) mapped to
+// NoLimitRuntimeTimeout since the emulator would otherwise enforce 0.
+func (m *Manifest) RuntimeTimeoutSeconds() int {
+	if secs := m.TimeoutSeconds(); secs != 0 {
+		return secs
+	}
+
+	return NoLimitRuntimeTimeout
+}
+
+// TimeoutWarning describes why the function's timeout cannot deploy to AWS
+// Lambda as is, or returns "" when it is unset or within 1 to MaxAWSTimeout
+// seconds. Locally 0 means no limit and larger values are honoured as is.
+func (m *Manifest) TimeoutWarning(name string) string {
+	secs := m.TimeoutSeconds()
+
+	switch {
+	case secs == 0:
+		return fmt.Sprintf("function %s: timeout 0 (no limit) is outside AWS Lambda's 1-%d second range; set it to %d or less before deploying", name, MaxAWSTimeout, MaxAWSTimeout)
+	case secs > MaxAWSTimeout:
+		return fmt.Sprintf("function %s: timeout %ds is outside AWS Lambda's 1-%d second range; set it to %d or less before deploying", name, secs, MaxAWSTimeout, MaxAWSTimeout)
+	}
+
+	return ""
+}
+
 // ApplyOverrides copies every field set on o onto m, leaving m's value
 // wherever o's is unset; URL and Local merge field by field. It layers a
 // lambdary.yml functions entry's inline settings over the function's own
@@ -192,7 +246,7 @@ func (m *Manifest) ApplyOverrides(o Manifest) {
 	if o.Handler != "" {
 		m.Handler = o.Handler
 	}
-	if o.Timeout != 0 {
+	if o.Timeout != nil {
 		m.Timeout = o.Timeout
 	}
 	if o.Memory != 0 {
@@ -256,15 +310,15 @@ func decodeFile(path string, v any) error {
 // Config's defaults block: local.backend, timeout, memory, url.path,
 // url.invoke_mode, and layers. Callers add file-path and document-kind
 // context to the returned error.
-func validateCommon(timeout, memory int, url URL, local Local, layers []string) error {
+func validateCommon(timeout *int, memory int, url URL, local Local, layers []string) error {
 	switch local.Backend {
 	case "", "auto", "container", "process":
 	default:
 		return fmt.Errorf("%w: got %q", ErrInvalidBackend, local.Backend)
 	}
 
-	if timeout < 0 {
-		return fmt.Errorf("%w: got %d", ErrInvalidTimeout, timeout)
+	if timeout != nil && *timeout < 0 {
+		return fmt.Errorf("%w: got %d", ErrInvalidTimeout, *timeout)
 	}
 
 	if memory < 0 {

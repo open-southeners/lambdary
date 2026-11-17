@@ -89,20 +89,31 @@ func TestManagerEnsureRetriesAfterFailedStart(t *testing.T) {
 
 func TestManagerInvokeTimeout(t *testing.T) {
 	withTimeout := fn("with-timeout")
-	withTimeout.Manifest = &manifest.Manifest{Timeout: 5}
+	withTimeout.Manifest = &manifest.Manifest{Timeout: new(5)}
 
 	noTimeout := fn("no-timeout")
 	noTimeout.Manifest = &manifest.Manifest{}
 
-	m := NewManager(newFakeBackend(), []discovery.Function{withTimeout, noTimeout})
+	unlimited := fn("unlimited")
+	unlimited.Manifest = &manifest.Manifest{Timeout: new(0)}
+
+	nilManifest := fn("nil-manifest")
+
+	m := NewManager(newFakeBackend(), []discovery.Function{withTimeout, noTimeout, unlimited, nilManifest})
 
 	if got, want := m.InvokeTimeout("with-timeout"), 5*time.Second; got != want {
 		t.Errorf("InvokeTimeout(with-timeout) = %s, want %s", got, want)
 	}
-	if got, want := m.InvokeTimeout("no-timeout"), defaultInvokeTimeout; got != want {
+	if got, want := m.InvokeTimeout("no-timeout"), 900*time.Second; got != want {
 		t.Errorf("InvokeTimeout(no-timeout) = %s, want default %s", got, want)
 	}
-	if got, want := m.InvokeTimeout("unknown"), defaultInvokeTimeout; got != want {
+	if got, want := m.InvokeTimeout("nil-manifest"), 900*time.Second; got != want {
+		t.Errorf("InvokeTimeout(nil-manifest) = %s, want default %s", got, want)
+	}
+	if got, want := m.InvokeTimeout("unlimited"), time.Duration(0); got != want {
+		t.Errorf("InvokeTimeout(unlimited) = %s, want %s (no deadline)", got, want)
+	}
+	if got, want := m.InvokeTimeout("unknown"), 900*time.Second; got != want {
 		t.Errorf("InvokeTimeout(unknown) = %s, want default %s", got, want)
 	}
 }

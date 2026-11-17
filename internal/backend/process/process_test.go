@@ -78,7 +78,7 @@ func TestProcessBackendStart(t *testing.T) {
 			Runtime: "nodejs22.x",
 			Handler: "index.handler",
 			Manifest: &manifest.Manifest{
-				Timeout: 7,
+				Timeout: new(7),
 				Environment: map[string]string{
 					"FAKE_RIE_RECORD": recordPath,
 					"TABLE_NAME":      "local-table",

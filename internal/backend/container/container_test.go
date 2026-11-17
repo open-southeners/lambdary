@@ -53,7 +53,7 @@ func TestContainerBackendStart(t *testing.T) {
 			Handler: "index.handler",
 			Runtime: "nodejs22.x",
 			Manifest: &manifest.Manifest{
-				Timeout: 10,
+				Timeout: new(10),
 			},
 		}
 

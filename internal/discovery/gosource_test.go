@@ -100,12 +100,12 @@ func TestDiscoverExplicitGoEntries(t *testing.T) {
 		Functions: map[string]manifest.FunctionEntry{
 			"zeta":   {Go: "./cmd/zeta", Manifest: manifest.Manifest{Memory: 512}},
 			"ping":   {Go: "./cmd/ping"},
-			"notify": {Go: "./cmd/notify", Manifest: manifest.Manifest{Timeout: 30, URL: manifest.URL{Path: "/hooks/notify"}}},
+			"notify": {Go: "./cmd/notify", Manifest: manifest.Manifest{Timeout: new(30), URL: manifest.URL{Path: "/hooks/notify"}}},
 			"inner":  {Go: "./sub/cmd/inner"},
 			"self":   {Go: "./selfmod"},
-			"legacy": {Path: "./legacy-node", Manifest: manifest.Manifest{Timeout: 20}},
+			"legacy": {Path: "./legacy-node", Manifest: manifest.Manifest{Timeout: new(20)}},
 		},
-		Defaults: manifest.Defaults{Timeout: 3, Memory: 64, Handler: "defhandler"},
+		Defaults: manifest.Defaults{Timeout: new(3), Memory: 64, Handler: "defhandler"},
 		Build:    manifest.Build{Go: manifest.GoBuild{Tags: []string{"netgo"}, LDFlags: "-s"}},
 	}
 
@@ -168,8 +168,8 @@ func TestDiscoverExplicitGoEntries(t *testing.T) {
 
 	t.Run("inline fields apply and url.path sets the route", func(t *testing.T) {
 		fn := findFunc(t, functions, "notify")
-		if fn.Manifest.Timeout != 30 {
-			t.Errorf("Timeout = %d, want 30", fn.Manifest.Timeout)
+		if fn.Manifest.TimeoutSeconds() != 30 {
+			t.Errorf("Timeout = %d, want 30", fn.Manifest.TimeoutSeconds())
 		}
 		if fn.Route != "/hooks/notify" {
 			t.Errorf("Route = %q, want /hooks/notify", fn.Route)
@@ -181,13 +181,13 @@ func TestDiscoverExplicitGoEntries(t *testing.T) {
 		if zeta.Manifest.Memory != 512 {
 			t.Errorf("zeta Memory = %d, want 512 (inline beats .lambda.yml)", zeta.Manifest.Memory)
 		}
-		if zeta.Manifest.Timeout != 7 {
-			t.Errorf("zeta Timeout = %d, want 7 (.lambda.yml beats defaults)", zeta.Manifest.Timeout)
+		if zeta.Manifest.TimeoutSeconds() != 7 {
+			t.Errorf("zeta Timeout = %d, want 7 (.lambda.yml beats defaults)", zeta.Manifest.TimeoutSeconds())
 		}
 
 		ping := findFunc(t, functions, "ping")
-		if ping.Manifest.Timeout != 3 || ping.Manifest.Memory != 64 {
-			t.Errorf("ping Timeout/Memory = %d/%d, want defaults 3/64", ping.Manifest.Timeout, ping.Manifest.Memory)
+		if ping.Manifest.TimeoutSeconds() != 3 || ping.Manifest.Memory != 64 {
+			t.Errorf("ping Timeout/Memory = %d/%d, want defaults 3/64", ping.Manifest.TimeoutSeconds(), ping.Manifest.Memory)
 		}
 	})
 
@@ -202,8 +202,8 @@ func TestDiscoverExplicitGoEntries(t *testing.T) {
 		if fn.Runtime != "nodejs22.x" || fn.Handler != "index.handler" {
 			t.Errorf("Runtime/Handler = %q/%q, want from .lambda.yml", fn.Runtime, fn.Handler)
 		}
-		if fn.Manifest.Timeout != 20 {
-			t.Errorf("Timeout = %d, want 20 (inline beats .lambda.yml's 9)", fn.Manifest.Timeout)
+		if fn.Manifest.TimeoutSeconds() != 20 {
+			t.Errorf("Timeout = %d, want 20 (inline beats .lambda.yml's 9)", fn.Manifest.TimeoutSeconds())
 		}
 		if fn.Route != "/legacy" {
 			t.Errorf("Route = %q, want /legacy", fn.Route)

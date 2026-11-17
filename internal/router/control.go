@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/manifest"
 	"github.com/open-southeners/lambdary/internal/versions"
 )
 
@@ -426,7 +427,7 @@ func baseConfiguration(name, runtime, handler string, fn discovery.Function) fun
 		Runtime:          runtime,
 		Role:             localRole,
 		Handler:          handler,
-		Timeout:          int(defaultInvokeTimeout / time.Second),
+		Timeout:          manifest.DefaultTimeout,
 		MemorySize:       128,
 		State:            "Active",
 		LastUpdateStatus: "Successful",
@@ -435,9 +436,7 @@ func baseConfiguration(name, runtime, handler string, fn discovery.Function) fun
 	}
 
 	if m := fn.Manifest; m != nil {
-		if m.Timeout > 0 {
-			cfg.Timeout = m.Timeout
-		}
+		cfg.Timeout = m.TimeoutSeconds()
 		if m.Memory > 0 {
 			cfg.MemorySize = m.Memory
 		}

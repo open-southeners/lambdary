@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -295,7 +296,7 @@ func TestManifestEnv(t *testing.T) {
 		fn := discovery.Function{
 			Name: "hello",
 			Manifest: &manifest.Manifest{
-				Timeout: 15,
+				Timeout: new(15),
 				Memory:  256,
 				Environment: map[string]string{
 					"TABLE_NAME": "local-table",
@@ -318,11 +319,27 @@ func TestManifestEnv(t *testing.T) {
 		}
 	})
 
+	t.Run("timeout 0 maps to the no-limit runtime value, above 900 passes through", func(t *testing.T) {
+		for _, tc := range []struct {
+			timeout int
+			want    string
+		}{
+			{0, "AWS_LAMBDA_FUNCTION_TIMEOUT=31536000"},
+			{1800, "AWS_LAMBDA_FUNCTION_TIMEOUT=1800"},
+		} {
+			fn := discovery.Function{Name: "f", Manifest: &manifest.Manifest{Timeout: &tc.timeout}}
+
+			if got := manifestEnv(fn, nil); !slices.Contains(got, tc.want) {
+				t.Errorf("manifestEnv(timeout %d) = %v, want it to contain %q", tc.timeout, got, tc.want)
+			}
+		}
+	})
+
 	t.Run("minimal manifest: only the function name", func(t *testing.T) {
 		fn := discovery.Function{Name: "minimal", Manifest: &manifest.Manifest{}}
 
 		got := manifestEnv(fn, nil)
-		want := []string{"AWS_LAMBDA_FUNCTION_NAME=minimal", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128"}
+		want := []string{"AWS_LAMBDA_FUNCTION_NAME=minimal", "AWS_LAMBDA_FUNCTION_TIMEOUT=900", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128"}
 
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("manifestEnv() =\n%v\nwant\n%v", got, want)
@@ -333,7 +350,7 @@ func TestManifestEnv(t *testing.T) {
 		fn := discovery.Function{Name: "no-manifest"}
 
 		got := manifestEnv(fn, nil)
-		want := []string{"AWS_LAMBDA_FUNCTION_NAME=no-manifest", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128"}
+		want := []string{"AWS_LAMBDA_FUNCTION_NAME=no-manifest", "AWS_LAMBDA_FUNCTION_TIMEOUT=900", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128"}
 
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("manifestEnv() =\n%v\nwant\n%v", got, want)
@@ -355,6 +372,7 @@ func TestManifestEnv(t *testing.T) {
 			"API_KEY=secret",
 			"EXTRA=from-file-only",
 			"AWS_LAMBDA_FUNCTION_NAME=hello",
+			"AWS_LAMBDA_FUNCTION_TIMEOUT=900",
 			"AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 		}
 

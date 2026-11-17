@@ -409,8 +409,17 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, ref strin
 // a throttle instead.
 func (rt *Router) invoke(parent context.Context, name string, body []byte, meta invocationMeta) (status int, respBody []byte, contentType string, err error) {
 	timeout := rt.mgr.InvokeTimeout(name)
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
+
+	// A zero timeout means the function has no limit: leave the context
+	// without a deadline of its own.
+	ctx := parent
+
+	if timeout > 0 {
+		var cancel context.CancelFunc
+
+		ctx, cancel = context.WithTimeout(parent, timeout)
+		defer cancel()
+	}
 
 	started := time.Now()
 

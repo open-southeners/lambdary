@@ -89,7 +89,7 @@ func TestContainerBackendIntegrationLockPinning(t *testing.T) {
 		Handler: "lambda_function.handler",
 		Backend: "container",
 		Manifest: &manifest.Manifest{
-			Timeout: 30,
+			Timeout: new(30),
 		},
 	}
 

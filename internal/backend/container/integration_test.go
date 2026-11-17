@@ -47,7 +47,7 @@ func TestContainerBackendIntegration(t *testing.T) {
 		Handler: "lambda_function.handler",
 		Backend: "container",
 		Manifest: &manifest.Manifest{
-			Timeout: 30,
+			Timeout: new(30),
 		},
 	}
 
@@ -196,7 +196,7 @@ func TestContainerBackendIntegrationLayers(t *testing.T) {
 		Handler: "lambda_function.handler",
 		Backend: "container",
 		Manifest: &manifest.Manifest{
-			Timeout: 30,
+			Timeout: new(30),
 			// Relative to dir, per manifest.ParseLayerRef/internal/layers'
 			// local-path resolution — resolves to testdata/
 			// python-layers-hello/layer.
@@ -308,7 +308,7 @@ func TestContainerBackendIntegrationDockerfileFunction(t *testing.T) {
 		Dir:     workDir,
 		Backend: "container",
 		Manifest: &manifest.Manifest{
-			Timeout: 30,
+			Timeout: new(30),
 		},
 	}
 

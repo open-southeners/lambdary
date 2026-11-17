@@ -34,10 +34,10 @@ const standaloneStartTimeout = 5 * time.Minute
 // instance it started to stop again before giving up.
 const standaloneStopTimeout = 30 * time.Second
 
-// defaultInvokeHTTPTimeout is the invoke HTTP call's deadline when a
-// function's manifest leaves timeout unset, mirroring
-// internal/router.Manager's own default.
-const defaultInvokeHTTPTimeout = 30 * time.Second
+// invokeHTTPMargin is how much longer standalone mode's HTTP call waits
+// than the function's own timeout, so the runtime's timeout response
+// arrives before the client gives up.
+const invokeHTTPMargin = 5 * time.Second
 
 func newInvokeCmd() *cobra.Command {
 	var (
@@ -120,6 +120,10 @@ func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root
 	fn, err := findFunction(fns, name)
 	if err != nil {
 		return err
+	}
+
+	for _, w := range fn.Warnings {
+		fmt.Fprintf(errOut, "warning: %s\n", w)
 	}
 
 	lock, err := lockfile.Load(root)
@@ -321,8 +325,14 @@ func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.F
 		_ = inst.Stop(stopCtx)
 	}()
 
-	invokeCtx, cancel := context.WithTimeout(ctx, functionTimeout(fn))
-	defer cancel()
+	invokeCtx := ctx
+
+	if d := functionTimeout(fn); d > 0 {
+		var cancel context.CancelFunc
+
+		invokeCtx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
+	}
 
 	req, err := http.NewRequestWithContext(invokeCtx, http.MethodPost, inst.InvokeURL(), bytes.NewReader(event))
 	if err != nil {
@@ -343,15 +353,17 @@ func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.F
 }
 
 // functionTimeout returns the invoke HTTP call's deadline for fn: its
-// manifest's timeout when set, else defaultInvokeHTTPTimeout — mirroring
-// internal/router.Manager.InvokeTimeout's default for the standalone path,
-// which has no Manager of its own.
+// effective timeout (manifest.DefaultTimeout when unset) plus
+// invokeHTTPMargin, mirroring internal/router.Manager.InvokeTimeout for the
+// standalone path, which has no Manager of its own. 0 means no deadline,
+// for a function whose timeout is 0 (no limit).
 func functionTimeout(fn discovery.Function) time.Duration {
-	if fn.Manifest != nil && fn.Manifest.Timeout > 0 {
-		return time.Duration(fn.Manifest.Timeout) * time.Second
+	secs := fn.Manifest.TimeoutSeconds()
+	if secs == 0 {
+		return 0
 	}
 
-	return defaultInvokeHTTPTimeout
+	return time.Duration(secs)*time.Second + invokeHTTPMargin
 }
 
 // findFunction returns the single discovered function named name. An

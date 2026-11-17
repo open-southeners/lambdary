@@ -47,7 +47,7 @@ build:
 
 		want := map[string]FunctionEntry{
 			"ping":   {Go: "./cmd/ping"},
-			"notify": {Go: "./cmd/notify", Manifest: Manifest{Timeout: 30, URL: URL{Path: "/hooks/notify"}}},
+			"notify": {Go: "./cmd/notify", Manifest: Manifest{Timeout: new(30), URL: URL{Path: "/hooks/notify"}}},
 			"legacy": {Path: "./legacy-node", Manifest: Manifest{Runtime: "nodejs22.x"}},
 		}
 		if !reflect.DeepEqual(c.Functions, want) {
@@ -143,7 +143,7 @@ func TestApplyOverrides(t *testing.T) {
 			Name:          "base",
 			Runtime:       "nodejs22.x",
 			Handler:       "index.handler",
-			Timeout:       10,
+			Timeout:       new(10),
 			Memory:        128,
 			Architectures: []string{"x86_64"},
 			Layers:        []string{"../layer"},
@@ -168,7 +168,7 @@ func TestApplyOverrides(t *testing.T) {
 			Name:          "o",
 			Runtime:       "python3.13",
 			Handler:       "app.handler",
-			Timeout:       99,
+			Timeout:       new(99),
 			Memory:        512,
 			Architectures: []string{"arm64"},
 			Layers:        []string{"../other"},
@@ -200,10 +200,10 @@ func TestApplyOverrides(t *testing.T) {
 
 	t.Run("single scalar override keeps the rest", func(t *testing.T) {
 		m := base()
-		m.ApplyOverrides(Manifest{Timeout: 5})
+		m.ApplyOverrides(Manifest{Timeout: new(5)})
 
 		want := base()
-		want.Timeout = 5
+		want.Timeout = new(5)
 		if !reflect.DeepEqual(m, want) {
 			t.Errorf("m = %#v, want %#v", m, want)
 		}

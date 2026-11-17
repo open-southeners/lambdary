@@ -2,6 +2,7 @@ package container
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/open-southeners/lambdary/internal/discovery"
@@ -15,7 +16,7 @@ func TestRunArgs(t *testing.T) {
 			Dir:     "/root/hello",
 			Handler: "lambda_function.handler",
 			Manifest: &manifest.Manifest{
-				Timeout:       15,
+				Timeout:       new(15),
 				Memory:        256,
 				Architectures: []string{"arm64"},
 				Environment: map[string]string{
@@ -50,6 +51,22 @@ func TestRunArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("timeout 0 maps to the no-limit runtime value, above 900 passes through", func(t *testing.T) {
+		for _, tc := range []struct {
+			timeout int
+			want    string
+		}{
+			{0, "AWS_LAMBDA_FUNCTION_TIMEOUT=31536000"},
+			{1800, "AWS_LAMBDA_FUNCTION_TIMEOUT=1800"},
+		} {
+			fn := discovery.Function{Name: "f", Dir: "/root/f", Manifest: &manifest.Manifest{Timeout: &tc.timeout}}
+
+			if got := runArgs(fn, "image", "/abs/f", nil, "", ""); !slices.Contains(got, tc.want) {
+				t.Errorf("runArgs(timeout %d) = %v, want it to contain %q", tc.timeout, got, tc.want)
+			}
+		}
+	})
+
 	t.Run("x86_64 architecture maps to linux/amd64", func(t *testing.T) {
 		fn := discovery.Function{
 			Name:     "hello",
@@ -67,6 +84,7 @@ func TestRunArgs(t *testing.T) {
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"-e", "AWS_LAMBDA_FUNCTION_TIMEOUT=900",
 			"-e", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 			"--platform", "linux/amd64",
 			"image",
@@ -94,6 +112,7 @@ func TestRunArgs(t *testing.T) {
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/minimal:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=minimal",
+			"-e", "AWS_LAMBDA_FUNCTION_TIMEOUT=900",
 			"-e", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/nodejs:22",
@@ -117,6 +136,7 @@ func TestRunArgs(t *testing.T) {
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/no-manifest:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=no-manifest",
+			"-e", "AWS_LAMBDA_FUNCTION_TIMEOUT=900",
 			"-e", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 			"--platform", "linux/amd64",
 			"image",
@@ -146,6 +166,7 @@ func TestRunArgs(t *testing.T) {
 			"-v", "/abs/custom-runtime:/var/task:ro",
 			"-v", "/abs/custom-runtime/bootstrap:/var/runtime/bootstrap:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=custom-runtime",
+			"-e", "AWS_LAMBDA_FUNCTION_TIMEOUT=900",
 			"-e", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/provided:al2023",
@@ -177,6 +198,7 @@ func TestRunArgs(t *testing.T) {
 			"-v", "/abs/hello:/var/task:ro",
 			"-v", "/cache/staging/hello:/opt:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"-e", "AWS_LAMBDA_FUNCTION_TIMEOUT=900",
 			"-e", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/nodejs:22",
@@ -207,6 +229,7 @@ func TestRunArgs(t *testing.T) {
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"-e", "AWS_LAMBDA_FUNCTION_TIMEOUT=900",
 			"-e", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/nodejs:22",
@@ -238,6 +261,7 @@ func TestRunArgs(t *testing.T) {
 			"-v", "/cache/staging/custom-runtime:/opt:ro",
 			"-v", "/cache/staging/custom-runtime/bootstrap:/var/runtime/bootstrap:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=custom-runtime",
+			"-e", "AWS_LAMBDA_FUNCTION_TIMEOUT=900",
 			"-e", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/provided:al2023",
@@ -268,6 +292,7 @@ func TestRunArgs(t *testing.T) {
 			"-p", "127.0.0.1:0:8080",
 			"-v", "/abs/hello:/var/task:ro",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"-e", "AWS_LAMBDA_FUNCTION_TIMEOUT=900",
 			"-e", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 			"--platform", "linux/amd64",
 			"public.ecr.aws/lambda/nodejs:22",
@@ -302,6 +327,7 @@ func TestRunArgs(t *testing.T) {
 			"-e", "API_KEY=secret",
 			"-e", "EXTRA=from-file-only",
 			"-e", "AWS_LAMBDA_FUNCTION_NAME=hello",
+			"-e", "AWS_LAMBDA_FUNCTION_TIMEOUT=900",
 			"-e", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128",
 			"--platform", "linux/amd64",
 			"image",

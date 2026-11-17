@@ -99,7 +99,7 @@ func TestRouterRecordsFunctionErrors(t *testing.T) {
 
 func TestRouterRecordsUpstreamTimeoutAsError(t *testing.T) {
 	slow := fn("slow")
-	slow.Manifest = &manifest.Manifest{Timeout: 1}
+	slow.Manifest = &manifest.Manifest{Timeout: new(1)}
 
 	b := newFakeBackend()
 	b.newInstance = func(string) *fakeInstance {
@@ -124,7 +124,7 @@ func TestRouterRecordsUpstreamTimeoutAsError(t *testing.T) {
 
 func TestRouterRecordsThrottleWhenDeadlineExpiresWaitingForLock(t *testing.T) {
 	busy := fn("busy")
-	busy.Manifest = &manifest.Manifest{Timeout: 1}
+	busy.Manifest = &manifest.Manifest{Timeout: new(1)}
 
 	b := newFakeBackend()
 	b.newInstance = func(string) *fakeInstance {

@@ -344,6 +344,10 @@ func discoverFunction(dir, dirName string, cfg *manifest.Config, listed *manifes
 		warnings = append(warnings, "runtime unknown")
 	}
 
+	if w := m.TimeoutWarning(name); w != "" {
+		warnings = append(warnings, w)
+	}
+
 	// A scanned provided.* function with its own go.mod is a Go function:
 	// built rather than expected to ship a hand-built bootstrap. A
 	// Dockerfile function builds itself, so it is left alone.

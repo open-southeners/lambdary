@@ -14,13 +14,8 @@ import (
 
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/manifest"
 )
-
-// defaultInvokeTimeout is the invoke deadline used when a function's
-// manifest leaves timeout unset. DESIGN.md's `.lambda.yml` spec documents
-// timeout as optional with no fixed default, so Manager picks 30s — AWS
-// Lambda's own console default — to give the queue+invoke path a bound.
-const defaultInvokeTimeout = 30 * time.Second
 
 // ErrUnknownFunction indicates Ensure was called with a name that does not
 // match any discovered function. Wrapped with %w so callers can match it
@@ -310,15 +305,17 @@ func (m *Manager) Discard(ctx context.Context, name, invokeURL string) error {
 }
 
 // InvokeTimeout returns the invoke deadline for name: its manifest's
-// timeout when set, else defaultInvokeTimeout. Unknown names also return
-// the default — Ensure is the one responsible for rejecting those.
+// timeout when set, else manifest.DefaultTimeout (900 s). A timeout of 0
+// means no limit and returns 0, which callers must treat as no deadline.
+// Unknown names return the default — Ensure is the one responsible for
+// rejecting those.
 func (m *Manager) InvokeTimeout(name string) time.Duration {
 	fn, ok := m.lookup(name)
-	if !ok || fn.Manifest == nil || fn.Manifest.Timeout == 0 {
-		return defaultInvokeTimeout
+	if !ok {
+		return manifest.DefaultTimeout * time.Second
 	}
 
-	return time.Duration(fn.Manifest.Timeout) * time.Second
+	return time.Duration(fn.Manifest.TimeoutSeconds()) * time.Second
 }
 
 // Running reports which instances exist right now, keyed the way Ensure keys

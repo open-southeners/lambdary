@@ -94,8 +94,10 @@ type Defaults struct {
 	// Handler is the function handler inherited by functions that don't
 	// set their own.
 	Handler string `yaml:"handler,omitempty"`
-	// Timeout is the invocation timeout in seconds. 0 means unset.
-	Timeout int `yaml:"timeout,omitempty"`
+	// Timeout is the invocation timeout in seconds inherited by functions
+	// that don't set their own. nil means unset; an explicit 0 means no
+	// limit locally.
+	Timeout *int `yaml:"timeout,omitempty"`
 	// Memory is the memory limit in MB. 0 means unset.
 	Memory int `yaml:"memory,omitempty"`
 	// Architectures lists target CPU architectures.
@@ -200,7 +202,7 @@ func (c *Config) ApplyDefaults(m *Manifest) {
 	if m.Handler == "" {
 		m.Handler = d.Handler
 	}
-	if m.Timeout == 0 {
+	if m.Timeout == nil {
 		m.Timeout = d.Timeout
 	}
 	if m.Memory == 0 {

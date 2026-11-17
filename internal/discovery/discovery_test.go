@@ -311,3 +311,57 @@ func TestDiscoverNilConfig(t *testing.T) {
 		t.Errorf("Warnings = %v, want one containing %q", fn.Warnings, "runtime unknown")
 	}
 }
+
+func TestDiscoverTimeoutWarnings(t *testing.T) {
+	functions, err := Discover("testdata/timeout", nil)
+	if err != nil {
+		t.Fatalf("Discover() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"unset", ""},
+		{"ok", ""},
+		{"zero", "function zero: timeout 0 (no limit) is outside AWS Lambda's 1-900 second range; set it to 900 or less before deploying"},
+		{"long", "function long: timeout 1800s is outside AWS Lambda's 1-900 second range; set it to 900 or less before deploying"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fn := findFunc(t, functions, tc.name)
+
+			if tc.want == "" {
+				if len(fn.Warnings) != 0 {
+					t.Errorf("Warnings = %v, want none", fn.Warnings)
+				}
+
+				return
+			}
+
+			if !containsWarning(fn.Warnings, tc.want) {
+				t.Errorf("Warnings = %v, want one containing %q", fn.Warnings, tc.want)
+			}
+		})
+	}
+
+	t.Run("a project default of 0 warns on functions that inherit it", func(t *testing.T) {
+		cfg := &manifest.Config{Defaults: manifest.Defaults{Timeout: new(0)}}
+
+		fns, err := Discover("testdata/timeout", cfg)
+		if err != nil {
+			t.Fatalf("Discover() unexpected error: %v", err)
+		}
+
+		unset := findFunc(t, fns, "unset")
+		if !containsWarning(unset.Warnings, "timeout 0 (no limit)") {
+			t.Errorf("unset Warnings = %v, want the no-limit warning", unset.Warnings)
+		}
+
+		ok := findFunc(t, fns, "ok")
+		if containsWarning(ok.Warnings, "outside AWS Lambda") {
+			t.Errorf("ok Warnings = %v, want none (its own 900 beats the default)", ok.Warnings)
+		}
+	})
+}
