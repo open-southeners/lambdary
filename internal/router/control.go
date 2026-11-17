@@ -29,6 +29,7 @@ const (
 	errInvalidContent   = "InvalidRequestContentException"
 	errPrecondition     = "PreconditionFailedException"
 	errService          = "ServiceException"
+	errUnsupported      = "UnsupportedOperation"
 )
 
 // Fixed ARN parts: nothing local has a region or account, and SDKs only need
@@ -124,6 +125,10 @@ func (rt *Router) handleControl(w http.ResponseWriter, r *http.Request) bool {
 		handler = func(w http.ResponseWriter, r *http.Request, fn discovery.Function) {
 			rt.updateAlias(w, r, fn, parts[2])
 		}
+	case len(parts) == 2 && parts[1] == "configuration" && r.Method == http.MethodGet:
+		handler = rt.getFunctionConfiguration
+	case len(parts) == 1 && r.Method == http.MethodGet:
+		handler = rt.getFunction
 	default:
 		return false
 	}
@@ -147,6 +152,115 @@ func (rt *Router) handleControl(w http.ResponseWriter, r *http.Request) bool {
 	}
 
 	return true
+}
+
+// handleUnsupportedControl answers a request under the Lambda control-plane
+// prefix that no handler took with an AWS-shaped 501, so an SDK reports what
+// Lambdary lacks rather than a generic not-found. It reports false for any
+// request outside that prefix.
+func handleUnsupportedControl(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasPrefix(r.URL.Path, invokePrefix) {
+		return false
+	}
+
+	writeAWSError(w, http.StatusNotImplemented, errUnsupported, fmt.Sprintf("Lambdary does not implement %s %s", r.Method, r.URL.Path))
+
+	return true
+}
+
+// getFunctionConfiguration serves GetFunctionConfiguration.
+func (rt *Router) getFunctionConfiguration(w http.ResponseWriter, r *http.Request, fn discovery.Function) {
+	cfg, ok := rt.configurationFor(w, r, fn)
+	if !ok {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+// getFunction serves GetFunction: the configuration plus a minimal Code
+// block, since there is no deployment package to locate locally.
+func (rt *Router) getFunction(w http.ResponseWriter, r *http.Request, fn discovery.Function) {
+	cfg, ok := rt.configurationFor(w, r, fn)
+	if !ok {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, struct {
+		Configuration functionConfiguration `json:"Configuration"`
+		Code          map[string]string     `json:"Code"`
+	}{cfg, map[string]string{"RepositoryType": "S3", "Location": ""}})
+}
+
+// configurationFor describes the function version the request's qualifier
+// selects, answering the AWS error itself on failure: $LATEST when there is
+// none, and an alias's primary version for an alias. The qualifier comes from
+// the function reference or ?Qualifier=. Unlike an invoke, it never draws a
+// canary weight or starts anything.
+func (rt *Router) configurationFor(w http.ResponseWriter, r *http.Request, fn discovery.Function) (functionConfiguration, bool) {
+	ref := strings.Split(strings.TrimPrefix(r.URL.Path, invokePrefix), "/")[0]
+	_, refQualifier := parseFunctionRef(ref)
+
+	qualifier, err := mergeQualifier(refQualifier, r.URL.Query().Get("Qualifier"))
+	if err != nil {
+		writeStoreError(w, err)
+		return functionConfiguration{}, false
+	}
+
+	version := qualifier
+
+	switch {
+	case qualifier == "" || qualifier == versions.Latest:
+		version = versions.Latest
+	case strings.Trim(qualifier, "0123456789") != "":
+		a, err := rt.versions.GetAlias(fn.Name, qualifier)
+		if err != nil {
+			writeStoreError(w, err)
+			return functionConfiguration{}, false
+		}
+
+		version = a.Version
+	}
+
+	if version == versions.Latest {
+		cfg, err := rt.latestConfiguration(fn)
+		if err != nil {
+			writeStoreError(w, err)
+			return functionConfiguration{}, false
+		}
+
+		return cfg, true
+	}
+
+	published, err := rt.versions.List(fn.Name)
+	if err != nil {
+		writeStoreError(w, err)
+		return functionConfiguration{}, false
+	}
+
+	for _, v := range published {
+		if v.Version == version {
+			return versionConfiguration(fn.Name, v), true
+		}
+	}
+
+	writeStoreError(w, fmt.Errorf("%w: version not found: %s", versions.ErrNotFound, version))
+
+	return functionConfiguration{}, false
+}
+
+// mergeQualifier picks the qualifier from the function reference's and
+// ?Qualifier=; AWS accepts either, but rejects two that disagree.
+func mergeQualifier(refQualifier, queryQualifier string) (string, error) {
+	if refQualifier == "" {
+		return queryQualifier, nil
+	}
+
+	if queryQualifier != "" && queryQualifier != refQualifier {
+		return "", fmt.Errorf("%w: the qualifier in the function name, %s, does not match Qualifier %s", versions.ErrInvalid, refQualifier, queryQualifier)
+	}
+
+	return refQualifier, nil
 }
 
 func (rt *Router) publishVersion(w http.ResponseWriter, r *http.Request, fn discovery.Function) {
@@ -287,13 +401,9 @@ func (rt *Router) updateAlias(w http.ResponseWriter, r *http.Request, fn discove
 // name and queryQualifier from ?Qualifier=; AWS accepts either, but rejects
 // two that disagree.
 func (rt *Router) resolveTarget(name, refQualifier, queryQualifier string) (target, executed string, err error) {
-	qualifier := queryQualifier
-	if refQualifier != "" {
-		if queryQualifier != "" && queryQualifier != refQualifier {
-			return "", "", fmt.Errorf("%w: the qualifier in the function name, %s, does not match Qualifier %s", versions.ErrInvalid, refQualifier, queryQualifier)
-		}
-
-		qualifier = refQualifier
+	qualifier, err := mergeQualifier(refQualifier, queryQualifier)
+	if err != nil {
+		return "", "", err
 	}
 
 	if qualifier == "" || qualifier == versions.Latest {
@@ -319,7 +429,17 @@ func (rt *Router) resolveTarget(name, refQualifier, queryQualifier string) (targ
 		return "", "", err
 	}
 
-	return rt.mgr.Register(fn), version, nil
+	key := rt.mgr.Register(fn)
+
+	// Versions carry no discovery warnings, so a timeout AWS would reject
+	// is logged the first time the version is registered.
+	if w := fn.Manifest.TimeoutWarning(key); w != "" {
+		if _, seen := rt.warnedVersions.LoadOrStore(key, true); !seen {
+			rt.logf("warning: %s", w)
+		}
+	}
+
+	return key, version, nil
 }
 
 // parseFunctionRef splits what AWS accepts as a function name (a plain name,

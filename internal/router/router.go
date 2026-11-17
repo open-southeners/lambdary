@@ -74,6 +74,10 @@ type Router struct {
 	// only $LATEST can be invoked.
 	versions *versions.Store
 
+	// warnedVersions holds the name:version keys whose timeout warning was
+	// already logged, so a published version warns once, when first used.
+	warnedVersions sync.Map
+
 	// queues serves the local SQS API. Nil leaves SQS calls unanswered.
 	queues *queue.API
 
@@ -249,6 +253,10 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet && path == "/" {
 		rt.handleIndex(w)
+		return
+	}
+
+	if handleUnsupportedControl(w, r) {
 		return
 	}
 
