@@ -213,14 +213,3 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   project's running function with the same name would be counted as theirs.
 - **Fix:** also filter on the `lambdary.dir` label, as `e2e_test.go`'s
   `waitForNoLabeledContainers` now does.
-
-## Function timeout has no AWS default
-
-- **Where:** `internal/router/manager.go` (`defaultInvokeTimeout`),
-  `internal/backend/container/argv.go`, `internal/backend/process/runtime.go`.
-- **What:** when `timeout` is unset, Lambdary waits 30 s and leaves
-  `AWS_LAMBDA_FUNCTION_TIMEOUT` unset. AWS defaults to 3 s, so a slow handler
-  passes locally and times out in production.
-- **Fix:** default to 3 s like AWS, and always pass the timeout to the runtime.
-  This changes behaviour for existing projects, so call it out in the
-  changelog.

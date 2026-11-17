@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Invoking an unknown function now reports `ResourceNotFoundException` to AWS SDKs.
 - Schedules invoke asynchronously, so a failed scheduled invocation is retried.
 - Function containers are no longer started with `--rm`; `Stop` removes them.
+- The default function `timeout` is now 900 s (AWS's maximum) instead of 30 s, and is always passed to the runtime; `timeout: 0` means no limit, and values outside 1-900 warn that they won't deploy to AWS Lambda as is.
 
 ### Fixed
 

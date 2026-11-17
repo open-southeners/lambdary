@@ -98,7 +98,7 @@ own configuration:
 name: api                 # default: directory name
 runtime: nodejs22.x       # any AWS runtime identifier
 handler: handler.handler
-timeout: 30               # seconds
+timeout: 30               # seconds, default 900 (AWS's maximum); 0 = no limit
 memory: 512               # MB
 architectures: [arm64]
 environment:
@@ -143,6 +143,12 @@ defaults:                 # inherited by functions that don't set them
 ```
 
 Unknown keys in either file are rejected, so typos surface immediately.
+
+`timeout` defaults to 900 seconds, AWS Lambda's maximum, so you don't need to
+set it. `timeout: 0` removes the limit locally and a value above 900 is
+honoured as is. AWS only accepts 1 to 900, so for those two `lambdary dev`,
+`lambdary list` and `lambdary invoke` print a warning that the function won't
+deploy as is.
 
 ### Go functions
 
@@ -392,6 +398,10 @@ listens beyond loopback, with no authentication.
   `provided.*` function whose `bootstrap` comes from a layer falls back to
   the container backend automatically, with a notice, since it can't run as
   a host process at all.
+- A function's `timeout` defaults to 900 s, so a slow handler that would
+  exceed a shorter limit you configure on AWS still passes locally unless you
+  set that limit here too. `timeout: 0` (no limit) and values above 900 are
+  outside AWS Lambda's 1-900 s range and warn at startup.
 - Requests to one function are serialized (the emulator processes one
   invocation at a time), matching single-instance Lambda semantics.
 - Route or name collisions never prevent startup: healthy functions keep
