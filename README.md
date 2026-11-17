@@ -81,7 +81,9 @@ terminal with a color-coded `[name]` prefix.
 ```
 lambdary dev      [--port N] [--backend auto|container|process] [--eager] [--no-reload] [--no-schedules]
 lambdary list                                # discovered functions, runtime, route
-lambdary invoke <fn> [-e event.json|-]       # one-shot invoke (uses the dev server if running)
+lambdary invoke <fn> [-e event.json|-|sqs|s3|schedule|apigw] [--set key=value]
+                                             # one-shot invoke (uses the dev server if running)
+lambdary logs [fn] [-f] [--tail N] [--port P]  # a running dev server's function output
 lambdary init <name> [--runtime <id>]        # scaffold a function
 ```
 
@@ -261,6 +263,81 @@ fires, in AWS's `rate()`, six-field `cron()` and `at()` syntax. `--no-schedules`
 turns them off. Both kinds accept `qualifier:` to invoke a version or alias
 instead of `$LATEST`.
 
+### Sample events
+
+`lambdary invoke <fn> --event <type>` builds a sample event, so you can try a
+handler without writing the payload. The types are `sqs`, `s3`, `schedule` and
+`apigw` (an API Gateway HTTP API event, payload 2.0). A file named like a type
+takes precedence. `--set key=value`, repeatable, overrides a field:
+
+```sh
+lambdary invoke worker --event sqs --set body='{"id":1}' --set count=3
+lambdary invoke thumbnail --event s3 --set bucket=uploads --set key=cat.png
+```
+
+| Type | Keys |
+|---|---|
+| `sqs` | `body`, `queue`, `count`, `attributes.<k>` |
+| `s3` | `bucket`, `key`, `size`, `event` (default `ObjectCreated:Put`) |
+| `schedule` | `rule` (or `schedule`), `time` (RFC 3339), `detail` (a JSON object) |
+| `apigw` | `method`, `path`, `body`, `query`, `header.<k>` |
+
+The output is the same every time: region `us-east-1`, account `000000000000`
+and fixed ids and timestamps, unless a key overrides them. An unknown key is
+rejected, naming the valid ones.
+
+### Asynchronous invokes
+
+`Invoke` with `X-Amz-Invocation-Type: Event` (`aws lambda invoke
+--invocation-type Event`) answers `202` at once and runs the function in the
+background. If it fails, Lambdary retries it twice, after 1 s and after 2 s.
+AWS waits about 1 and 2 minutes. `DryRun` only validates the function and
+answers `204`. Schedules invoke the same way, so a failed scheduled
+invocation is retried too.
+
+### Logs, metrics and health
+
+`lambdary logs` prints the output of a running dev server's functions from
+another terminal, as `[function] line`:
+
+```sh
+lambdary logs worker -f --tail 20     # follow one function; omit it for all
+```
+
+The server keeps the last 1,000 lines per function. `--tail` (default 100)
+picks how many to show, and `-f` keeps printing new ones. Behind it,
+`GET /_lambdary/logs?function=<name>&tail=<n>&follow=1` streams the same
+lines as NDJSON.
+
+`GET /_lambdary/metrics?window=1h` returns a JSON summary of each function's
+invocations, errors, throttles and duration percentiles over the window (a Go
+duration, one hour by default), in total and per version or alias.
+
+The CloudWatch `GetMetricData` call works too, for the `AWS/Lambda` namespace
+with a `FunctionName` dimension and an optional `Resource` dimension
+(`<fn>:<version>`, `<fn>:<alias>` or `<fn>:$LATEST`). Current AWS SDKs send it
+over Smithy RPCv2 with CBOR bodies, and so does the server. The metrics are
+`Invocations`, `Errors`, `Throttles` and `Duration`, and the statistics are
+`Sum`, `SampleCount`, `Average`, `Minimum`, `Maximum` and percentiles such as
+`p99`:
+
+```sh
+export AWS_ENDPOINT_URL_CLOUDWATCH=http://127.0.0.1:8000
+```
+
+Metrics are kept in memory and start over when the server restarts. An
+invocation whose function fails to start is not counted, as on AWS.
+
+`GET /_lambdary/health` answers `200` with each function's state, `running` or
+`stopped` (it starts on its next invoke), for a Compose healthcheck. The image
+has busybox's `wget`:
+
+```yaml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8000/_lambdary/health"]
+      interval: 5s
+```
+
 ### Running in Docker Compose
 
 The `ghcr.io/open-southeners/lambdary` image runs `lambdary dev` as a Compose
@@ -331,7 +408,12 @@ listens beyond loopback, with no authentication.
 - Local queues are standard queues held in memory: they survive a hot
   reload but not a restart. FIFO queues and SQS's older query protocol
   (`Action=SendMessage` form posts) are not supported. Schedules fire only
-  while the server runs, and a failed scheduled invocation is not retried.
+  while the server runs.
+- The container backend runs each function's image for its `architectures`
+  (`linux/amd64` for the default `x86_64`, `linux/arm64` for `arm64`), pulling
+  it again when the cached image is for another platform. A container that
+  exits at start fails with its exit code and last log lines, and the invoke
+  API answers `502` `ServiceException`.
 - `.lambdary/lock` pins the container backend's image digests on first
   start — commit it alongside your functions for reproducible starts across
   machines.

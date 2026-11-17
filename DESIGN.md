@@ -456,8 +456,8 @@ validation error rather than a silent no-op.
 - **Logs:** each backend streams stdout/stderr, multiplexed to the CLI with a
   per-function color-coded prefix (honest `REPORT`-style line per invocation:
   duration, billed duration, memory — matching Lambda's log format).
-- **Shutdown:** SIGINT stops all containers/processes; containers run with
-  `--rm` and a `lambdary` label so orphans are findable (`docker ps
+- **Shutdown:** SIGINT stops all containers/processes; containers carry a
+  `lambdary` label so orphans are findable (`docker ps
   --filter label=lambdary`).
 
 ## CLI surface (v0)
@@ -466,8 +466,8 @@ validation error rather than a silent no-op.
 lambdary dev [root]        # discover, watch, serve (the main command)
   --port 8000  --eager  --backend auto|container|process
 lambdary list              # discovered functions, runtime, backend, route
-lambdary invoke <fn> [-e event.json]   # one-shot raw invoke, prints result
-lambdary logs [fn]         # follow logs
+lambdary invoke <fn> [-e event.json|sqs|s3|schedule|apigw] [--set k=v]   # one-shot invoke, prints result
+lambdary logs [fn] [-f] [--tail N]   # a running dev server's function output
 lambdary init <name> [--runtime <id>]   # scaffold a function dir + .lambda.yml
 ```
 
@@ -482,6 +482,11 @@ internal/rie/            # vendored RIE binary management (go:embed, extraction,
 internal/router/         # http server, event mapping
 internal/watcher/
 internal/cli/logs.go      # log multiplexing (folded into cli rather than its own package)
+internal/cli/logs_cmd.go  # `lambdary logs`, reading GET /_lambdary/logs
+internal/logbus/          # per-function ring buffer of output lines, with subscribers
+internal/fixtures/        # sample events for `invoke --event`
+internal/metrics/         # in-memory invocation metrics
+internal/cloudwatch/      # GetMetricData (RPCv2 CBOR) over internal/metrics
 ```
 
 Key dependencies: `spf13/cobra`, `fsnotify/fsnotify`, `goccy/go-yaml` (or
@@ -502,7 +507,7 @@ can come later if we need event streams.
    backend (first language), then Python and custom runtimes (`bootstrap`).
 5. **M4 — DX:** hot reload, log multiplexing, `init` scaffolding, `--eager`.
 6. **M5 — Extras (post-v0):** Caddy embedding (TLS/HTTP3), per-function
-   concurrency, event fixtures for SQS/S3 shapes, env-file layering.
+   concurrency, env-file layering.
 
 ## Decisions log
 
