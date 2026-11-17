@@ -488,6 +488,16 @@ func writeStoreError(w http.ResponseWriter, err error) {
 
 // writeAWSError writes an error in AWS's REST-JSON shape.
 func writeAWSError(w http.ResponseWriter, status int, errType, message string) {
+	writeAWSErrorOfType(w, status, errType, "User", message)
+}
+
+// writeAWSServiceError writes a ServiceException of Type "Service": a failure
+// on the service side rather than in the request.
+func writeAWSServiceError(w http.ResponseWriter, status int, message string) {
+	writeAWSErrorOfType(w, status, errService, "Service", message)
+}
+
+func writeAWSErrorOfType(w http.ResponseWriter, status int, errType, kind, message string) {
 	w.Header().Set(errorTypeHeader, errType)
-	writeJSON(w, status, map[string]string{"Type": "User", "Message": message})
+	writeJSON(w, status, map[string]string{"Type": kind, "Message": message})
 }

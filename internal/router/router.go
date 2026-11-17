@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/cloudwatch"
 	"github.com/open-southeners/lambdary/internal/discovery"
 	"github.com/open-southeners/lambdary/internal/event"
@@ -336,6 +337,11 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, ref strin
 
 	status, respBody, contentType, err := rt.invoke(r.Context(), target, body, meta)
 	if err != nil {
+		if errors.Is(err, backend.ErrStartFailed) {
+			writeAWSServiceError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+
 		writeUpstreamError(w, err)
 		return
 	}
@@ -416,7 +422,12 @@ func (rt *Router) invoke(parent context.Context, name string, body []byte, meta 
 	}
 
 	if attemptErr != nil {
-		rt.record(meta, started, true, throttled)
+		// A function that never started is a service-side failure before
+		// any handler ran, which AWS does not count as an invocation.
+		if !errors.Is(attemptErr, backend.ErrStartFailed) {
+			rt.record(meta, started, true, throttled)
+		}
+
 		return 0, nil, "", newInvokeError(ctx, timeout, attemptErr)
 	}
 
