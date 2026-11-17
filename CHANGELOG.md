@@ -36,6 +36,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The container backend pulls and runs images for the function's `architectures` (`--platform linux/<arch>`), and re-pulls a cached image of another platform.
 - A container that exits at start now reports its exit code and last log lines, and the invoke API answers `502` `ServiceException`.
+- `lambdary logs <fn>` includes the output of published versions, and `<fn>:<version>` or `<fn>:<alias>` selects one.
+- An `Invoke` with no payload reaches the handler as `{}`, as on AWS, instead of an empty body.
+- Functions without `memory` report 128 MB, AWS's default, rather than 3008 MB.
 
 ## [1.1.0] - 2026-09-06
 
