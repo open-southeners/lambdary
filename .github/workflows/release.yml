@@ -11,6 +11,10 @@
 #                  each as a tar.gz with README.md and CHANGELOG.md, generate
 #                  checksums.txt, and upload everything to the release
 #                  created above.
+#   3. announce  - for stable tags only (no "-" pre-release suffix), post
+#                  the release notes from CHANGELOG.md to the Telegram channel
+#                  through Pepebits/release-announce, as the other Open
+#                  Southeners repositories do.
 #
 # A release REQUIRES a `## [X.Y.Z]` section in CHANGELOG.md for the tagged
 # version, or the release job fails before anything is built or published —
@@ -188,3 +192,22 @@ jobs:
             dist/*.tar.gz \
             dist/checksums.txt \
             --clobber
+
+  announce:
+    needs: [release, binaries]
+    if: ${{ !contains(github.ref_name, '-') }}
+    permissions:
+      contents: read
+    uses: Pepebits/release-announce/.github/workflows/announce.yml@v1
+    with:
+      tag: ${{ github.ref_name }}
+      notes_source: changelog
+      banner_url: https://opensoutheners.com/gh_card/{repo}
+      install_title: 🍺 Homebrew
+      install_command: brew install open-southeners/tap/lambdary
+      buttons: >-
+        [{"text": "📝 Notes", "url": "{repo_url}/releases/tag/{tag}"},
+         {"text": "📖 Docs", "url": "https://docs.opensoutheners.com/lambdary/"}]
+    secrets:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
