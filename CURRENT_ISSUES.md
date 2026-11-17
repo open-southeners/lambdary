@@ -224,3 +224,20 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   extra version.
 - **Fix:** hash the effective timeout (`TimeoutSeconds()`) rather than the raw
   field. Harmless otherwise.
+
+## ARNs always use us-east-1 and account 000000000000
+
+- **Where:** `internal/router/control.go` (`arnPrefix`, `localRole`, and the
+  "Function not found" message in `handleControl`), and `internal/queue/store.go`
+  (`Region`, `AccountID`), which queue ARNs and the SQS, schedule and fixture
+  events in `internal/triggers/events.go` and `internal/fixtures/fixtures.go`
+  copy. `internal/queue/api.go` (`queueURL`) builds URLs from the request host
+  and account only.
+- **What:** ARNs in Lambda responses and errors (e.g. a ResourceNotFound message
+  `arn:aws:lambda:us-east-1:000000000000:function:nope`) and in SQS responses
+  ignore the region the client signed for (e.g. `eu-south-2`), so code that
+  parses or compares the region sees the wrong one.
+- **Fix:** take the region from the credential scope of the request's SigV4
+  `Authorization` header (`Credential=<key>/<date>/<region>/<service>/aws4_request`),
+  falling back to `AWS_REGION`, then `us-east-1`, and build ARNs per request
+  instead of from constants.

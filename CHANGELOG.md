@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Versions and aliases: `aws lambda publish-version`, `create-alias`, `update-alias` and `invoke --qualifier` work locally, including weighted canaries.
 - Official Docker image, `ghcr.io/open-southeners/lambdary`, for running `lambdary dev` in Docker Compose.
 - `LAMBDARY_NETWORK` puts function containers on a Docker network, and `LAMBDARY_HOST_ROOT` sets the host path of `--root`.
-- `aws lambda get-function-configuration` and `get-function` work against the dev server, and other control-plane calls Lambdary lacks answer `UnsupportedOperation` instead of a bare 404.
+- `aws lambda get-function-configuration`, `get-function` and `list-functions` (with `--function-version ALL` and paging) work against the dev server, and other control-plane calls Lambdary lacks answer `UnsupportedOperation` instead of a bare 404.
 - `LAMBDARY_ROOT` sets the default `--root`, so `docker exec <service> lambdary list` uses the dev server's root.
 - `lambdary dev --host` sets the address the server listens on.
 - **SQS queues**: `lambdary dev` serves SQS's API, so producers use the AWS SDK or CLI against it, and `events: [{sqs: …}]` delivers batches to a function with `ReportBatchItemFailures`, visibility-timeout retries and a dead-letter queue.

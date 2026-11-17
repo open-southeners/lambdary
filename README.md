@@ -207,7 +207,9 @@ aws lambda invoke --function-name notify --qualifier live out.json
 
 Supported calls are `PublishVersion`, `ListVersionsByFunction`, `CreateAlias`,
 `GetAlias`, `UpdateAlias`, `GetFunctionConfiguration`, `GetFunction` (its `Code`
-location is empty) and `Invoke` with a version number or alias as its
+location is empty), `ListFunctions` (`$LATEST` of each function by name, every
+version with `FunctionVersion=ALL`; a function name shared by several
+functions is left out) and `Invoke` with a version number or alias as its
 qualifier. Each invoke response names the version that ran in
 `X-Amz-Executed-Version`. Any other Lambda control-plane call answers `501`
 `UnsupportedOperation`.
