@@ -59,18 +59,6 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   a long response mid-flight. Sized as its own milestone — see "Deferred:
   incremental delivery" in `plans/response-streaming.md`.
 
-## `lambdary logs [fn]` command missing (DESIGN gap)
-
-- **Where:** `internal/cli` (DESIGN.md "CLI surface" lists it; 4 of 5
-  commands exist).
-- **What:** log streaming exists only inside `dev` (`internal/cli/logs.go`);
-  there is no standalone `logs` command to follow a running dev server's
-  function output from another terminal.
-- **Fix:** needs a transport first (e.g. an SSE or plain-text stream endpoint
-  on the dev server, `GET /_lambdary/logs[?fn=]`), then a thin CLI command
-  consuming it; alternatively drop the command from DESIGN if `dev`'s inline
-  streaming is deemed sufficient.
-
 ## .NET functions are not built before container start (DESIGN gap)
 
 - **Where:** `internal/backend/container`.
@@ -165,24 +153,6 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   responses, and message groups plus deduplication for FIFO, when a project
   needs either.
 
-## Failed scheduled invocations are not retried
-
-- **Where:** `internal/triggers` (`runSchedule`).
-- **What:** EventBridge invokes Lambda asynchronously, so AWS retries a failed
-  scheduled invocation twice. Locally the failure is only logged.
-- **Fix:** fold into asynchronous invoke support (`X-Amz-Invocation-Type:
-  Event`), and run schedules through it.
-
-## No manual trigger for schedules or queues
-
-- **Where:** `internal/cli/invoke.go`.
-- **What:** `lambdary invoke <fn>` takes a JSON file, so firing a schedule by
-  hand means writing the Scheduled Event yourself. The gaps list asks for
-  `lambdary invoke <fn> --event schedule|sqs|s3|apigw`, but `-e/--event`
-  already names a file.
-- **Fix:** part of the event fixtures work: a separate flag (or a
-  `fixture:` prefix) that builds the event from `internal/triggers`' builders.
-
 ## API Gateway time layout duplicated in fixtures
 
 - **Where:** `internal/fixtures/fixtures.go` (apigw builder) and
@@ -206,3 +176,40 @@ Discovered during orchestrated work; routed here instead of fixed inline.
 - **Fix:** make `WithLock` context-aware (give up and report a throttle when
   the caller's context ends while waiting), or bound the wait for the lock
   separately from the invoke timeout.
+
+## E2E tests fail when any other Lambda container is running
+
+- **Where:** `internal/cli/e2e_test.go:92` and the sibling `e2e_*_test.go` files.
+- **What:** after `StopAll()` the tests assert that `docker ps` shows no
+  container from a Lambda base image at all, not just the ones they started.
+  Any other session or project running such a container fails `TestE2E`,
+  `TestE2EGoModule`, `TestE2ELayers` and `TestE2EStream`.
+- **Fix:** label the containers the backend starts with a per-run id and
+  filter `docker ps` by that label in the tests.
+
+## Async retries keep the version chosen at enqueue time
+
+- **Where:** `internal/router/async.go`.
+- **What:** an `Event` invoke through a weighted alias resolves its version
+  once; its retries run that same version. AWS routes each retry again.
+- **Fix:** re-run `resolveTarget` before each retry. Minor.
+
+## Function containers outlive a crashed dev server
+
+- **Where:** `internal/backend/container/argv.go` (`runArgs`),
+  `internal/backend/container/instance.go` (`stopContainer`).
+- **What:** containers are no longer started with `--rm`, so a failed start
+  can still be inspected for its exit code and logs. `Stop` removes them, but
+  after a hard crash of `lambdary dev` they stay behind as exited containers
+  labelled `lambdary=1`.
+- **Fix:** at startup, remove exited containers labelled `lambdary=1` for this
+  project (the orphan sweep already listed in the Compose plan extras).
+
+## Two Docker tests still match containers by function name only
+
+- **Where:** `internal/backend/container/integration_test.go` (~line 126) and
+  `internal/cli/e2e_compose_test.go` (lines 108, 141, 203).
+- **What:** they filter `docker ps` on `lambdary.function=<name>`, so another
+  project's running function with the same name would be counted as theirs.
+- **Fix:** also filter on the `lambdary.dir` label, as `e2e_test.go`'s
+  `waitForNoLabeledContainers` now does.
