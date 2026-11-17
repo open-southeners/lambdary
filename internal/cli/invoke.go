@@ -15,6 +15,7 @@ import (
 
 	"github.com/open-southeners/lambdary/internal/backend"
 	"github.com/open-southeners/lambdary/internal/discovery"
+	"github.com/open-southeners/lambdary/internal/fixtures"
 	"github.com/open-southeners/lambdary/internal/lockfile"
 )
 
@@ -41,6 +42,7 @@ const defaultInvokeHTTPTimeout = 30 * time.Second
 func newInvokeCmd() *cobra.Command {
 	var (
 		eventSource string
+		sets        []string
 		port        int
 		backendFlag string
 	)
@@ -58,14 +60,26 @@ response it returns.
 Standalone mode: if no dev server answers on --port, invoke discovers the
 function itself, starts its backend just for this one call (per --backend),
 invokes it, prints the response, and stops the backend again — useful for a
-quick one-off check without a dev server running.`,
+quick one-off check without a dev server running.
+
+Event: --event takes a JSON file path, "-" for stdin, or a sample AWS event
+type — sqs, s3, schedule or apigw — which builds a realistic payload (a file
+named like the type takes precedence). Override its fields with repeatable
+--set key=value; --set needs a sample event type. Keys:
+  sqs:      body, queue, count, attributes.<k>
+  s3:       bucket, key, size, event (default ObjectCreated:Put)
+  schedule: rule, time, detail (JSON)
+  apigw:    method, path, body, query, header.<k>
+
+Example: lambdary invoke worker -e sqs --set body='{"id":1}' --set count=3`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInvoke(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), root, args[0], eventSource, port, backendFlag)
+			return runInvoke(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), root, args[0], eventSource, sets, port, backendFlag)
 		},
 	}
 
-	cmd.Flags().StringVarP(&eventSource, "event", "e", "", `path to a JSON event file ("-" reads stdin; default: "{}")`)
+	cmd.Flags().StringVarP(&eventSource, "event", "e", "", `path to a JSON event file, "-" for stdin, or a sample event type (`+strings.Join(fixtures.Kinds(), ", ")+`) (default: "{}")`)
+	cmd.Flags().StringArrayVar(&sets, "set", nil, "override a field of a sample event type, as key=value (repeatable; see the command help for keys)")
 	cmd.Flags().IntVar(&port, "port", 0, "dev server port to probe (default: lambdary.yml port or 8000)")
 	cmd.Flags().StringVar(&backendFlag, "backend", "auto", `execution backend for standalone mode when the function's own local.backend is "auto": "auto", "container", or "process" (ignored in server mode)`)
 
@@ -77,12 +91,12 @@ quick one-off check without a dev server running.`,
 // plans/m1-container-path.md Unit D. backendFlag only matters in standalone
 // mode: server mode reuses whatever backend the running dev server already
 // picked.
-func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root, name, eventSource string, portFlag int, backendFlag string) error {
+func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root, name, eventSource string, sets []string, portFlag int, backendFlag string) error {
 	if err := validateBackend(backendFlag); err != nil {
 		return err
 	}
 
-	event, err := resolveEvent(eventSource, stdin)
+	event, err := resolveEvent(eventSource, sets, stdin)
 	if err != nil {
 		return err
 	}
@@ -123,8 +137,27 @@ func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root
 }
 
 // resolveEvent reads the invoke payload from source: a JSON file path,
-// "-" for stdin, or "" (unset) for the default empty event "{}".
-func resolveEvent(source string, stdin io.Reader) ([]byte, error) {
+// "-" for stdin, a fixture kind (see internal/fixtures: sqs, s3, schedule,
+// apigw), or "" (unset) for the default empty event "{}". A kind builds its
+// sample event with sets ("key=value" overrides) applied, but only when no
+// file named like the kind exists, so a file called "sqs" still wins. sets
+// are only valid with a fixture kind.
+func resolveEvent(source string, sets []string, stdin io.Reader) ([]byte, error) {
+	if fixtures.IsKind(source) {
+		if _, err := os.Stat(source); err != nil {
+			set, err := parseSets(sets)
+			if err != nil {
+				return nil, err
+			}
+
+			return fixtures.Build(source, set)
+		}
+	}
+
+	if len(sets) > 0 {
+		return nil, fmt.Errorf("invoke: --set requires --event to be a fixture type (%s)", strings.Join(fixtures.Kinds(), ", "))
+	}
+
 	switch source {
 	case "":
 		return []byte("{}"), nil
@@ -143,6 +176,23 @@ func resolveEvent(source string, stdin io.Reader) ([]byte, error) {
 
 		return data, nil
 	}
+}
+
+// parseSets turns repeated "key=value" --set flags into a map; a later
+// duplicate key wins.
+func parseSets(sets []string) (map[string]string, error) {
+	out := make(map[string]string, len(sets))
+
+	for _, s := range sets {
+		k, v, ok := strings.Cut(s, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("invoke: invalid --set %q; want key=value", s)
+		}
+
+		out[k] = v
+	}
+
+	return out, nil
 }
 
 // detectServer probes http://127.0.0.1:<port>/ and reports whether a

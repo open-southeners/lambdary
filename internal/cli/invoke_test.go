@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,7 +52,7 @@ func TestResolveEvent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stdinReader := bytes.NewBufferString(tt.stdin)
-			got, err := resolveEvent(tt.source, stdinReader)
+			got, err := resolveEvent(tt.source, nil, stdinReader)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("resolveEvent error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -60,6 +62,78 @@ func TestResolveEvent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResolveEventFixture checks fixture kinds, --set, and kind-vs-file
+// precedence.
+func TestResolveEventFixture(t *testing.T) {
+	t.Run("kind builds fixture with set", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+
+		got, err := resolveEvent("sqs", []string{"body=hello", "count=2"}, bytes.NewReader(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var m struct {
+			Records []struct {
+				Body        string `json:"body"`
+				EventSource string `json:"eventSource"`
+			} `json:"Records"`
+		}
+		if err := json.Unmarshal(got, &m); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(m.Records) != 2 || m.Records[0].Body != "hello" || m.Records[0].EventSource != "aws:sqs" {
+			t.Errorf("unexpected fixture: %s", got)
+		}
+	})
+
+	t.Run("existing file named like a kind wins", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+
+		if err := os.WriteFile(filepath.Join(dir, "sqs"), []byte(`{"from":"file"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := resolveEvent("sqs", nil, bytes.NewReader(nil))
+		if err != nil || string(got) != `{"from":"file"}` {
+			t.Errorf("got %q, %v; want file contents", got, err)
+		}
+
+		if _, err := resolveEvent("sqs", []string{"body=x"}, bytes.NewReader(nil)); err == nil {
+			t.Error("--set with a file event should error")
+		}
+	})
+
+	t.Run("set without kind errors", func(t *testing.T) {
+		for _, source := range []string{"", "-", "event.json"} {
+			if _, err := resolveEvent(source, []string{"a=b"}, bytes.NewReader(nil)); err == nil || !strings.Contains(err.Error(), "--set") {
+				t.Errorf("source %q: error = %v, want --set error", source, err)
+			}
+		}
+	})
+
+	t.Run("bad set and unknown key", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+
+		if _, err := resolveEvent("s3", []string{"novalue"}, bytes.NewReader(nil)); err == nil || !strings.Contains(err.Error(), "key=value") {
+			t.Errorf("error = %v, want key=value hint", err)
+		}
+
+		if _, err := resolveEvent("s3", []string{"nope=1"}, bytes.NewReader(nil)); err == nil || !strings.Contains(err.Error(), "valid keys") {
+			t.Errorf("error = %v, want valid keys list", err)
+		}
+	})
+
+	t.Run("value may contain equals", func(t *testing.T) {
+		set, err := parseSets([]string{"query=a=1&b=2"})
+		if err != nil || set["query"] != "a=1&b=2" {
+			t.Errorf("parseSets = %v, %v", set, err)
+		}
+	})
 }
 
 // TestDetectServer checks server detection by probing a non-existent server.
