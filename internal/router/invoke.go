@@ -24,20 +24,7 @@ type InvokeResult struct {
 func (rt *Router) Invoke(ctx context.Context, ref string, payload []byte) (InvokeResult, error) {
 	name, qualifier := parseFunctionRef(ref)
 
-	switch fns := rt.byName[name]; len(fns) {
-	case 0:
-		return InvokeResult{}, fmt.Errorf("function not found: %s", name)
-	case 1:
-	default:
-		dirs := make([]string, len(fns))
-		for i, fn := range fns {
-			dirs[i] = fn.Dir
-		}
-
-		return InvokeResult{}, fmt.Errorf("function name %q is used by multiple functions: %s", name, strings.Join(dirs, ", "))
-	}
-
-	target, executed, err := rt.resolveTarget(name, qualifier, "")
+	target, executed, err := rt.resolveRef(name, qualifier, "")
 	if err != nil {
 		return InvokeResult{}, err
 	}
@@ -48,4 +35,23 @@ func (rt *Router) Invoke(ctx context.Context, ref string, payload []byte) (Invok
 	}
 
 	return InvokeResult{Payload: body, ExecutedVersion: executed, FunctionError: isFunctionError(status, body)}, nil
+}
+
+// resolveRef checks that name is exactly one discovered function and resolves
+// its qualifier as resolveTarget does, for the in-process invoke paths.
+func (rt *Router) resolveRef(name, refQualifier, queryQualifier string) (target, executed string, err error) {
+	switch fns := rt.byName[name]; len(fns) {
+	case 0:
+		return "", "", fmt.Errorf("function not found: %s", name)
+	case 1:
+	default:
+		dirs := make([]string, len(fns))
+		for i, fn := range fns {
+			dirs[i] = fn.Dir
+		}
+
+		return "", "", fmt.Errorf("function name %q is used by multiple functions: %s", name, strings.Join(dirs, ", "))
+	}
+
+	return rt.resolveTarget(name, refQualifier, queryQualifier)
 }

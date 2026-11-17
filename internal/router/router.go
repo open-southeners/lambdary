@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/open-southeners/lambdary/internal/cloudwatch"
@@ -87,6 +88,24 @@ type Router struct {
 	// cloudwatch serves GetMetricData over metrics. It always exists, so a
 	// router without a recorder still answers 501 to it instead of 404.
 	cloudwatch *cloudwatch.API
+
+	// baseCtx parents every asynchronous invocation; Shutdown cancels it
+	// (through cancel), which also abandons pending retries. async counts the
+	// invocations in flight, and asyncMu orders their start against Shutdown
+	// so none is added once it began waiting.
+	baseCtx context.Context
+	cancel  context.CancelFunc
+	async   sync.WaitGroup
+	asyncMu sync.Mutex
+
+	// retryDelays is the wait before each retry of a failed asynchronous
+	// invocation; its length is the number of retries.
+	retryDelays []time.Duration
+
+	// log receives the final failure of asynchronous invocations. Nil
+	// discards it.
+	log   io.Writer
+	logMu sync.Mutex
 }
 
 // Options are the optional stores NewServer wires into a Router.
@@ -102,6 +121,17 @@ type Options struct {
 	// Logs serves function output at /_lambdary/logs. Nil disables it; the
 	// endpoint then answers 501.
 	Logs *logbus.Bus
+	// Context parents the background work of asynchronous invocations
+	// (Event invokes and InvokeAsync); cancelling it, or calling Shutdown,
+	// abandons them. Nil means context.Background().
+	Context context.Context
+	// AsyncRetryDelays is the wait before each retry of a failed
+	// asynchronous invocation, so its length is the number of retries. Nil
+	// means DefaultAsyncRetryDelays; an empty non-nil slice disables retries.
+	AsyncRetryDelays []time.Duration
+	// Log receives the final failure of asynchronous invocations. Nil
+	// discards it.
+	Log io.Writer
 }
 
 // NewWithVersions is New plus the Lambda control plane (see control.go) and
@@ -117,6 +147,16 @@ func NewServer(m *Manager, fns []discovery.Function, opts Options) *Router {
 	rt.metrics = opts.Metrics
 	rt.logs = opts.Logs
 	rt.cloudwatch = cloudwatch.NewAPI(opts.Metrics)
+	rt.log = opts.Log
+
+	if opts.AsyncRetryDelays != nil {
+		rt.retryDelays = opts.AsyncRetryDelays
+	}
+
+	if opts.Context != nil {
+		rt.cancel()
+		rt.baseCtx, rt.cancel = context.WithCancel(opts.Context)
+	}
 
 	if opts.Queues != nil {
 		rt.queues = queue.NewAPI(opts.Queues)
@@ -149,7 +189,15 @@ func New(m *Manager, fns []discovery.Function) http.Handler {
 	}
 	sort.Strings(names)
 
-	return &Router{mgr: m, fns: fns, byName: byName, names: names, cloudwatch: cloudwatch.NewAPI(nil)}
+	baseCtx, cancel := context.WithCancel(context.Background())
+
+	return &Router{
+		mgr: m, fns: fns, byName: byName, names: names,
+		cloudwatch:  cloudwatch.NewAPI(nil),
+		baseCtx:     baseCtx,
+		cancel:      cancel,
+		retryDelays: DefaultAsyncRetryDelays,
+	}
 }
 
 // ServeHTTP implements http.Handler.
@@ -216,7 +264,26 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // version's own instance (see resolveTarget). The response names the version
 // that ran, and flags a handler failure as AWS's Invoke does, because it
 // reports one with a 200.
+//
+// X-Amz-Invocation-Type picks how it runs. RequestResponse (or nothing) is
+// the above. Event validates the same way, then answers 202 with no body and
+// runs the invocation in the background with AWS's retries (see runAsync).
+// DryRun validates and answers 204, running nothing. Any other value is a
+// 400.
 func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, ref string) {
+	invocationType := r.Header.Get(invocationTypeHeader)
+
+	switch invocationType {
+	case "", invocationRequestResponse:
+		invocationType = invocationRequestResponse
+	case invocationEvent, invocationDryRun:
+	default:
+		writeAWSError(w, http.StatusBadRequest, errInvalidParameter, fmt.Sprintf(
+			"1 validation error detected: Value '%s' at 'invocationType' failed to satisfy constraint: Member must satisfy enum value set: [%s, %s, %s]",
+			invocationType, invocationEvent, invocationRequestResponse, invocationDryRun))
+		return
+	}
+
 	name, refQualifier := parseFunctionRef(ref)
 
 	if fns := rt.byName[name]; len(fns) > 1 {
@@ -248,6 +315,17 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, ref strin
 		return
 	}
 
+	meta := rt.invocationMeta(name, executed, refQualifier, r.URL.Query().Get("Qualifier"))
+
+	switch invocationType {
+	case invocationDryRun:
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case invocationEvent:
+		rt.handleAsyncInvoke(w, r, ref, asyncTarget{target: target, executed: executed, meta: meta})
+		return
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -255,8 +333,6 @@ func (rt *Router) handleInvoke(w http.ResponseWriter, r *http.Request, ref strin
 		})
 		return
 	}
-
-	meta := rt.invocationMeta(name, executed, refQualifier, r.URL.Query().Get("Qualifier"))
 
 	status, respBody, contentType, err := rt.invoke(r.Context(), target, body, meta)
 	if err != nil {

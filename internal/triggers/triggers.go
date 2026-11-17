@@ -28,6 +28,11 @@ type Result struct {
 // optional :qualifier.
 type Invoker func(ctx context.Context, ref string, payload []byte) (Result, error)
 
+// AsyncInvoker queues one asynchronous invocation of ref, a function name with
+// an optional :qualifier, and returns without waiting for it to run. It fails
+// only when the invocation cannot be queued.
+type AsyncInvoker func(ctx context.Context, ref string, payload []byte) error
+
 // pollWait is the long-poll wait of each receive, SQS's maximum.
 const pollWait = queue.MaxWait
 
@@ -38,6 +43,12 @@ const retryDelay = time.Second
 type Runner struct {
 	// Invoke runs the functions.
 	Invoke Invoker
+	// InvokeAsync queues one asynchronous invocation and returns once it is
+	// queued. Schedules use it when set, as EventBridge invokes Lambda
+	// asynchronously, so a failed run is retried; SQS deliveries always use
+	// Invoke, since a failed batch is retried by the queue's visibility
+	// timeout. Nil runs schedules through Invoke.
+	InvokeAsync AsyncInvoker
 	// Queues holds the queues SQS events read.
 	Queues *queue.Store
 	// Log receives one line per batch and per schedule fire.
@@ -332,6 +343,23 @@ func (r *Runner) runSchedule(ctx context.Context, fn string, index int, ev *mani
 		payload := []byte(ev.Input)
 		if ev.Input == "" {
 			payload, _ = json.Marshal(scheduledEvent(rule, next)) //nolint:errcheck // a struct of strings always marshals.
+		}
+
+		if r.InvokeAsync != nil {
+			// EventBridge invokes asynchronously, so a failure is retried
+			// and logged by whoever runs the queued invocation.
+			if err := r.InvokeAsync(ctx, ref(fn, ev.Qualifier), payload); err != nil && ctx.Err() == nil {
+				r.logf("schedule %s → %s: invoke failed: %s", ev.Expression, fn, err)
+			} else if err == nil {
+				r.logf("schedule %s → %s: queued", ev.Expression, fn)
+			}
+
+			now := r.clock()
+			for ok && !next.After(now) {
+				next, ok = expr.Next(next, loc)
+			}
+
+			continue
 		}
 
 		res, err := r.Invoke(ctx, ref(fn, ev.Qualifier), payload)

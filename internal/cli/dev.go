@@ -35,6 +35,10 @@ import (
 // exiting anyway, per plans/m1-container-path.md Unit D ("~10s timeout").
 const shutdownTimeout = 10 * time.Second
 
+// asyncShutdownWait bounds how long `dev` waits for cancelled background
+// (asynchronous) invocations to return before stopping the backend anyway.
+const asyncShutdownWait = 2 * time.Second
+
 // defaultDevHost keeps the dev server off the network unless asked: it runs
 // whatever code it finds and has no authentication.
 const defaultDevHost = "127.0.0.1"
@@ -141,6 +145,11 @@ type devServer struct {
 	// stopTriggers stops the current stack's event sources. Only serve's
 	// loop goroutine touches it.
 	stopTriggers func()
+
+	// triggerRouter is the router stopTriggers' stack serves through; its
+	// background (asynchronous) invocations stop with the triggers. Only
+	// serve's loop goroutine touches it.
+	triggerRouter *router.Router
 
 	// ready receives the server's actual listen address once bound, so
 	// tests (and, in principle, future callers) can dial it without
@@ -269,7 +278,7 @@ func (d *devServer) buildStack(ctx context.Context, b router.BackendResolver) (*
 	mgr := router.NewManagerWithResolver(b, fns)
 	mgr.OnStart = d.onInstanceStart
 
-	rt := router.NewServer(mgr, fns, router.Options{Versions: d.versions, Queues: d.queues, Metrics: d.metrics, Logs: d.logs})
+	rt := router.NewServer(mgr, fns, router.Options{Versions: d.versions, Queues: d.queues, Metrics: d.metrics, Logs: d.logs, Context: ctx, Log: d.errOut})
 
 	return &devStack{
 		scanRoot: scanRoot,
@@ -291,17 +300,32 @@ func (d *devServer) startTriggers(ctx context.Context, stack *devStack) {
 			res, err := stack.router.Invoke(ctx, ref, payload)
 			return triggers.Result{Payload: res.Payload, FunctionError: res.FunctionError}, err
 		},
+		// Schedules invoke asynchronously, as EventBridge does, so a failed
+		// run is retried.
+		InvokeAsync: stack.router.InvokeAsync,
 	}
 
 	d.stopTriggers = r.Start(ctx, stack.fns)
+	d.triggerRouter = stack.router
 }
 
-// stopCurrentTriggers stops the running event sources, if any, so nothing
-// invokes a Manager that is about to stop.
+// stopCurrentTriggers stops the running event sources, if any, and cancels
+// the current router's background invocations (waiting briefly for them), so
+// nothing invokes a Manager that is about to stop.
 func (d *devServer) stopCurrentTriggers() {
 	if d.stopTriggers != nil {
 		d.stopTriggers()
 		d.stopTriggers = nil
+	}
+
+	if d.triggerRouter != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), asyncShutdownWait)
+		if err := d.triggerRouter.Shutdown(ctx); err != nil {
+			fmt.Fprintf(d.errOut, "warning: stopping background invocations: %s\n", err)
+		}
+		cancel()
+
+		d.triggerRouter = nil
 	}
 }
 
