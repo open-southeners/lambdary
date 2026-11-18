@@ -24,9 +24,10 @@ Layer version ARNs are fetched with your own AWS credentials, through the standa
 Each function's environment is built from, lowest priority first:
 
 1. On the process backend only, the environment `lambdary` itself runs with.
-2. `local.env_file`.
-3. `environment` in `.lambda.yml` (or inherited from `defaults:`).
-4. The Lambda variables below, which Lambdary always sets.
+2. The AWS variables, when [`aws.environment`](project-config.md#aws) is on.
+3. `local.env_file`.
+4. `environment` in `.lambda.yml` (or inherited from `defaults:`).
+5. The Lambda variables below, which Lambdary always sets.
 
 | Variable | Value |
 |---|---|
@@ -36,6 +37,26 @@ Each function's environment is built from, lowest priority first:
 | `AWS_LAMBDA_FUNCTION_MEMORY_SIZE` | The function's `memory`, `128` when unset. |
 
 AWS's emulator adds the rest of the Lambda runtime environment itself, such as `AWS_LAMBDA_RUNTIME_API`.
+
+## AWS variables injected with `aws.environment`
+
+With `aws.environment: true` in [`lambdary.yml`](project-config.md#aws), functions also get these, unless `local.env_file` or `environment` sets the same name:
+
+| Variable | Value |
+|---|---|
+| `AWS_REGION`, `AWS_DEFAULT_REGION` | `aws.region`, `us-east-1` by default. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | `lambdary`. The dev server accepts any credentials. |
+| `AWS_ENDPOINT_URL` | Where the function reaches the dev server, as in the table below. |
+
+| Where the function runs | `AWS_ENDPOINT_URL` |
+|---|---|
+| Process backend | `http://127.0.0.1:<port>` |
+| Container backend, Lambdary in a container | `http://<Lambdary's container name>:<port>` on the shared network |
+| Container backend, Lambdary on the host | `http://host.docker.internal:<port>` |
+
+`<port>` is the dev server's port. For the last case Lambdary adds `--add-host=host.docker.internal:host-gateway` to the function's container, and warns at startup when the dev server listens on loopback only, which containers can't reach. Start it with `--host 0.0.0.0`.
+
+`lambdary invoke` without a dev server sets the region and credentials but not `AWS_ENDPOINT_URL`, since nothing answers there. These values replace any `AWS_*` variable of your own shell on the process backend.
 
 ## Variables for AWS clients
 

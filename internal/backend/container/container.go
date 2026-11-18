@@ -60,11 +60,21 @@ type containerBackend struct {
 	// placement says where Lambdary sits relative to the Docker daemon. Its
 	// zero value is the plain on-the-host case.
 	placement Placement
+
+	// aws is the AWS environment injected into every function; its zero
+	// value injects nothing.
+	aws backend.AWS
 }
 
 // NewPlaced is NewWithLock for a known Placement. lock may be nil.
 func NewPlaced(cli string, runner backend.Runner, lock Lock, cacheDir string, placement Placement) backend.Backend {
 	return &containerBackend{cli: cli, runner: runner, lock: lock, cacheDir: cacheDir, placement: placement}
+}
+
+// NewPlacedAWS is NewPlaced for a backend that also injects aws into every
+// function's environment.
+func NewPlacedAWS(cli string, runner backend.Runner, lock Lock, cacheDir string, placement Placement, aws backend.AWS) backend.Backend {
+	return &containerBackend{cli: cli, runner: runner, lock: lock, cacheDir: cacheDir, placement: placement, aws: aws}
 }
 
 // New returns a backend.Backend that runs functions as containers via cli
@@ -228,7 +238,15 @@ func (b *containerBackend) Start(ctx context.Context, fn discovery.Function) (ba
 		return nil, fmt.Errorf("container: %s: %w", fn.Name, err)
 	}
 
+	// The AWS environment sits beneath env_file and the manifest's own
+	// environment, which runArgs merges over it.
+	endpointHost, addHost := awsEndpointHost(b.aws, b.placement)
+	fileEnv = b.aws.UnderEnv(fileEnv, endpointHost)
+
 	args := b.placement.place(runArgs(fn, runImage, hostDir, fileEnv, hostStaging, hostBootstrap))
+	if addHost {
+		args = withAddHost(args)
+	}
 
 	out, err := b.runner.Run(ctx, b.cli, args...)
 	if err != nil {

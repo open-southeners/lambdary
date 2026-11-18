@@ -24,8 +24,8 @@ import (
 // "`local.backend` is not honored per function". cacheDir is the project's
 // `.lambdary` directory (see cacheDirFor), threaded into every backend this
 // resolver builds.
-func resolveManagerBackend(ctx context.Context, mode string, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string) (router.BackendResolver, string, error) {
-	global, kind, name, err := resolveBackend(ctx, mode, runner, errW, lock, cacheDir)
+func resolveManagerBackend(ctx context.Context, mode string, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string, aws backend.AWS) (router.BackendResolver, string, error) {
+	global, kind, name, err := resolveBackend(ctx, mode, runner, errW, lock, cacheDir, aws)
 	if err != nil {
 		return nil, "", err
 	}
@@ -40,11 +40,11 @@ func resolveManagerBackend(ctx context.Context, mode string, runner backend.Runn
 		globalKind: kind,
 		errW:       errW,
 		resolveContainer: func(ctx context.Context) (backend.Backend, error) {
-			b, _, _, err := resolveContainerBackend(ctx, runner, lock, cacheDir)
+			b, _, _, err := resolveContainerBackend(ctx, runner, errW, lock, cacheDir, aws)
 			return b, err
 		},
 		resolveProcess: func(ctx context.Context) (backend.Backend, error) {
-			b, _, _, err := resolveProcessBackend(ctx, runner, errW, lock, cacheDir)
+			b, _, _, err := resolveProcessBackend(ctx, runner, errW, lock, cacheDir, aws)
 			return b, err
 		},
 	}

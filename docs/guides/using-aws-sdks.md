@@ -119,9 +119,31 @@ out, err := client.Invoke(ctx, &lambda.InvokeInput{
 {% endtab %}
 {% endtabs %}
 
-## Calling one function from another
+## From inside a function
 
-A function can invoke another through the same Lambda API. Set the endpoint in the calling function's `environment`, with the address the function reaches the dev server on:
+A function can invoke another function, or send to a queue, through the same API. Turn on `aws.environment` once in `lambdary.yml`:
+
+```yaml
+aws:
+  environment: true
+  region: us-east-1       # optional
+```
+
+Every function then gets `AWS_ENDPOINT_URL`, the region and placeholder credentials, so its SDK needs no setup. The endpoint is the address that function reaches the dev server on:
+
+| Where the function runs | `AWS_ENDPOINT_URL` |
+|---|---|
+| Process backend | `http://127.0.0.1:8000` |
+| Container backend, Lambdary in [Docker Compose](docker-compose.md) | `http://<Lambdary's container name>:8000` |
+| Container backend, Lambdary on the host | `http://host.docker.internal:8000` |
+
+With Lambdary on the host and the container backend, start the dev server with `--host 0.0.0.0`, or the containers can't reach it. Lambdary warns at startup when that is the case.
+
+A variable the function's own `environment` or `local.env_file` sets always wins. To aim only one service somewhere else, set `AWS_ENDPOINT_URL_SQS` or another per-service variable, which beats `AWS_ENDPOINT_URL`. The full list is in [Environment Variables](../configuration/environment-variables.md#aws-variables-injected-with-awsenvironment).
+
+`lambdary invoke` with no dev server running injects the region and credentials, but no endpoint, since nothing answers there.
+
+Without `aws.environment`, set the endpoint yourself in the calling function's `environment`:
 
 ```yaml
 # .lambda.yml
@@ -129,7 +151,7 @@ environment:
   AWS_ENDPOINT_URL_LAMBDA: http://lambdary:8000
 ```
 
-In [Docker Compose](docker-compose.md), functions share the Lambdary service's network and use `http://lambdary:8000`. On the process backend, functions run on your host and use `http://127.0.0.1:8000`.
+Use `http://lambdary:8000` in Compose and `http://127.0.0.1:8000` on the process backend.
 
 ## Protocols
 

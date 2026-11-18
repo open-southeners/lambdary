@@ -38,6 +38,8 @@ services:
       AWS_ENDPOINT_URL_SQS: http://lambdary:8000
 ```
 
+For the functions themselves, set `aws.environment: true` in `lambdary.yml`. Each function then gets `AWS_ENDPOINT_URL` pointing at the Lambdary container's name, plus the region and credentials, and it just works in Compose with no `environment:` of your own. See [Using AWS SDKs](using-aws-sdks.md#from-inside-a-function).
+
 ## Settings
 
 It works out the rest from its own container: which host paths its mounts come from, and which network it is on. Two settings override that, and you need them if it can't inspect itself, such as when you set `hostname:` on the service:

@@ -3,6 +3,7 @@ package manifest
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -14,6 +15,14 @@ const DefaultPort = 8000
 // DefaultRoot is the functions root folder assumed when lambdary.yml
 // omits root.
 const DefaultRoot = "."
+
+// DefaultAWSRegion is the region reported to functions when lambdary.yml
+// enables aws.environment but omits aws.region.
+const DefaultAWSRegion = "us-east-1"
+
+// awsRegionPattern is what an aws.region may look like: lowercase letters,
+// digits and hyphens, as in eu-south-2 or us-gov-west-1.
+var awsRegionPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // Errors returned by Config validation, wrapped with the config file path
 // and the offending value.
@@ -28,6 +37,9 @@ var (
 	// an empty key, a key with "/" or whitespace, or an inline name field
 	// (the map key already is the function name).
 	ErrFunctionName = errors.New("function name must be a non-empty map key without \"/\" or whitespace, and entries must not set name")
+	// ErrInvalidRegion indicates aws.region is set to something that can't
+	// be an AWS region name.
+	ErrInvalidRegion = errors.New("aws.region must be a region name such as us-east-1: lowercase letters, digits and hyphens")
 )
 
 // Config is the parsed and validated content of a project's optional
@@ -53,6 +65,28 @@ type Config struct {
 	// sqs events already create — for queues only producers and external
 	// consumers use, or to set a consumed queue's attributes in one place.
 	Queues map[string]QueueSettings `yaml:"queues,omitempty"`
+	// AWS configures the AWS environment injected into functions.
+	AWS AWS `yaml:"aws,omitempty"`
+}
+
+// AWS configures the AWS environment Lambdary can inject into every
+// function, so an AWS SDK inside it talks to Lambdary with no setup.
+type AWS struct {
+	// Environment turns the injection on. Off by default: functions then
+	// get exactly the variables their configuration sets.
+	Environment bool `yaml:"environment,omitempty"`
+	// Region is the AWS region reported to functions. Empty means unset;
+	// use RegionOrDefault to read it.
+	Region string `yaml:"region,omitempty"`
+}
+
+// RegionOrDefault returns Region, or DefaultAWSRegion when unset.
+func (a AWS) RegionOrDefault() string {
+	if a.Region == "" {
+		return DefaultAWSRegion
+	}
+
+	return a.Region
 }
 
 // FunctionEntry is one function in Config.Functions. Exactly one of Path
@@ -143,6 +177,11 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) validate(path string) error {
 	if c.Port < 0 || c.Port > 65535 {
 		return fmt.Errorf("config: %s: %w: got %d", path, ErrInvalidPort, c.Port)
+	}
+
+	// An unset region is fine (it defaults); a set one must look like one.
+	if c.AWS.Region != "" && !awsRegionPattern.MatchString(c.AWS.Region) {
+		return fmt.Errorf("config: %s: %w: got %q", path, ErrInvalidRegion, c.AWS.Region)
 	}
 
 	if err := validateCommon(c.Defaults.Timeout, c.Defaults.Memory, c.Defaults.URL, c.Defaults.Local, c.Defaults.Layers); err != nil {

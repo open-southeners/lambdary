@@ -630,3 +630,44 @@ func TestInstanceInvokeURLEmptyHost(t *testing.T) {
 		t.Errorf("InvokeURL() = %q, want host 10.1.2.3", got)
 	}
 }
+
+func TestDetectPlacementSelfName(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("the inspected container name, without its slash", func(t *testing.T) {
+		out := `[{"Name":"/compose-lambdary-1","Mounts":[{"Source":"/h","Destination":"/w"}],"NetworkSettings":{"Networks":{"n":{"IPAddress":"1.2.3.4"}}}}]`
+
+		p, err := detectPlacement(ctx, inspectRunner(out, nil), "docker", "/w", envMap(nil), hostnameOf("abc123"), true)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if p.SelfName != "compose-lambdary-1" {
+			t.Errorf("SelfName = %q, want compose-lambdary-1", p.SelfName)
+		}
+	})
+
+	t.Run("falls back to the hostname", func(t *testing.T) {
+		out := inspectJSON([][2]string{{"/h", "/w"}}, map[string]string{"n": "1.2.3.4"})
+
+		p, err := detectPlacement(ctx, inspectRunner(out, nil), "docker", "/w", envMap(nil), hostnameOf("abc123"), true)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if p.SelfName != "abc123" {
+			t.Errorf("SelfName = %q, want abc123", p.SelfName)
+		}
+	})
+
+	t.Run("on the host there is none", func(t *testing.T) {
+		p, err := detectPlacement(ctx, &fakeRunner{}, "docker", "/w", envMap(nil), hostnameOf("h"), false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if p.SelfName != "" {
+			t.Errorf("SelfName = %q, want empty", p.SelfName)
+		}
+	})
+}

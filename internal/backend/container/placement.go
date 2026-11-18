@@ -44,6 +44,10 @@ type Placement struct {
 	// Direct means Lambdary reaches functions at their address on Network
 	// and publishes no ports.
 	Direct bool
+	// SelfName is Lambdary's own container name on Network, the address
+	// other containers there reach it by. Empty outside a container, or when
+	// it couldn't be worked out.
+	SelfName string
 
 	// mounts maps Lambdary's paths to host paths, longest destination first.
 	mounts []mount
@@ -58,6 +62,8 @@ type mount struct {
 
 // inspectResult is the part of `docker inspect` output Placement needs.
 type inspectResult struct {
+	// Name is the container's name, with a leading slash.
+	Name   string `json:"Name"`
 	Mounts []struct {
 		Source      string `json:"Source"`
 		Destination string `json:"Destination"`
@@ -103,8 +109,19 @@ func detectPlacement(
 	if contained {
 		self, err := inspectSelf(ctx, runner, cli, hostname)
 
+		// The hostname is the container's short ID by default, which Docker's
+		// DNS resolves on a shared network too: the fallback for a name that
+		// couldn't be read.
+		if h, herr := hostname(); herr == nil {
+			p.SelfName = h
+		}
+
 		switch {
 		case err == nil:
+			if name := strings.TrimPrefix(self.Name, "/"); name != "" {
+				p.SelfName = name
+			}
+
 			if err := p.adoptSelf(self); err != nil {
 				return Placement{}, err
 			}

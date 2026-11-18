@@ -203,7 +203,14 @@ func (d *devServer) run(ctx context.Context) error {
 	d.logs = logbus.New()
 	d.streamer.bus = d.logs
 
-	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock, d.cacheDir)
+	// The AWS environment comes from the config as it is at startup, like the
+	// port: a config error is left for buildStack to report.
+	var aws backend.AWS
+	if _, cfg, err := resolveRoot(d.root); err == nil {
+		aws = awsFor(cfg, resolvePort(d.portFlag, cfg), d.listenHost())
+	}
+
+	b, backendName, err := resolveManagerBackend(ctx, d.backendFlag, backend.ExecRunner{}, d.errOut, lock, d.cacheDir, aws)
 	if err != nil {
 		return err
 	}

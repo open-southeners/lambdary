@@ -241,3 +241,19 @@ Discovered during orchestrated work; routed here instead of fixed inline.
   `Authorization` header (`Credential=<key>/<date>/<region>/<service>/aws4_request`),
   falling back to `AWS_REGION`, then `us-east-1`, and build ARNs per request
   instead of from constants.
+
+## `aws:` settings need a dev server restart
+
+- **Where:** `internal/cli/dev.go` (backends are resolved once at startup).
+- **What:** changing `aws.environment` or `aws.region` in `lambdary.yml` only
+  takes effect on the next `lambdary dev` start, not on hot reload. The port
+  behaves the same way.
+- **Fix:** rebuild the backends' AWS settings on a structural reload.
+
+## `host.docker.internal` needs Docker 20.10+ and is untested on Podman
+
+- **Where:** `internal/backend/container/awsenv.go` (`withAddHost`).
+- **What:** with `aws.environment` on and Lambdary on the host, function
+  containers reach it through `--add-host=host.docker.internal:host-gateway`,
+  which older Docker and possibly Podman don't support.
+- **Fix:** detect the runtime and fall back to the bridge gateway address.

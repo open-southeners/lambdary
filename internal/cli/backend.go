@@ -81,14 +81,14 @@ const (
 //     prints a single notice to errW and falls back to process. Any other
 //     container-detection error fails outright rather than falling back,
 //     since it isn't one of the "no usable container runtime" cases.
-func resolveBackend(ctx context.Context, mode string, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string) (b backend.Backend, kind, name string, err error) {
+func resolveBackend(ctx context.Context, mode string, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string, aws backend.AWS) (b backend.Backend, kind, name string, err error) {
 	switch mode {
 	case "", "auto":
-		return resolveAutoBackend(ctx, runner, errW, lock, cacheDir)
+		return resolveAutoBackend(ctx, runner, errW, lock, cacheDir, aws)
 	case "container":
-		return resolveContainerBackend(ctx, runner, lock, cacheDir)
+		return resolveContainerBackend(ctx, runner, errW, lock, cacheDir, aws)
 	case "process":
-		return resolveProcessBackend(ctx, runner, errW, lock, cacheDir)
+		return resolveProcessBackend(ctx, runner, errW, lock, cacheDir, aws)
 	default:
 		return nil, "", "", fmt.Errorf(`unknown --backend %q: want "auto", "container", or "process"`, mode)
 	}
@@ -97,7 +97,7 @@ func resolveBackend(ctx context.Context, mode string, runner backend.Runner, err
 // resolveContainerBackend implements the "container" mode: DetectContainerCLI
 // or fail; lock (nil-able) is threaded into container.NewWithLock/New, and
 // cacheDir (the project's `.lambdary` directory) into its cacheDir field.
-func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *lockfile.Lock, cacheDir string) (backend.Backend, string, string, error) {
+func resolveContainerBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string, aws backend.AWS) (backend.Backend, string, string, error) {
 	cli, err := backend.DetectContainerCLI(ctx, runner)
 	if err != nil {
 		return nil, "", "", err
@@ -108,6 +108,8 @@ func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *l
 		return nil, "", "", err
 	}
 
+	warnAWSLoopback(errW, aws, placement)
+
 	// A nil *lockfile.Lock must stay a nil interface, not a non-nil one
 	// holding a nil pointer.
 	var imageLock container.Lock
@@ -115,7 +117,7 @@ func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *l
 		imageLock = lock
 	}
 
-	b := container.NewPlaced(cli, runner, imageLock, cacheDir, placement)
+	b := container.NewPlacedAWS(cli, runner, imageLock, cacheDir, placement, aws)
 
 	name := fmt.Sprintf("container (%s)", cli)
 	if placement.Network != "" {
@@ -132,7 +134,7 @@ func resolveContainerBackend(ctx context.Context, runner backend.Runner, lock *l
 // plans/m5-extras.md's Unit C: a recording failure is noted on errW rather
 // than failing backend resolution. cacheDir (the project's `.lambdary`
 // directory) is threaded into process.New's cacheDir field.
-func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string) (backend.Backend, string, string, error) {
+func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string, aws backend.AWS) (backend.Backend, string, string, error) {
 	riePath, err := rie.Resolve(ctx, runner)
 	if err != nil {
 		return nil, "", "", err
@@ -144,7 +146,7 @@ func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.W
 		}
 	}
 
-	return process.New(riePath, runner, cacheDir), backendKindProcess, "process (host runtimes)", nil
+	return process.NewWithAWS(riePath, runner, cacheDir, aws), backendKindProcess, "process (host runtimes)", nil
 }
 
 // resolveAutoBackend implements the "auto" mode: container first, falling
@@ -152,8 +154,8 @@ func resolveProcessBackend(ctx context.Context, runner backend.Runner, errW io.W
 // runtime simply isn't usable (no CLI on PATH, or a CLI present but its
 // daemon unreachable) — any other error (e.g. a mode="process" fallback
 // itself failing to resolve the RIE) is returned as-is.
-func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string) (backend.Backend, string, string, error) {
-	b, kind, name, err := resolveContainerBackend(ctx, runner, lock, cacheDir)
+func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writer, lock *lockfile.Lock, cacheDir string, aws backend.AWS) (backend.Backend, string, string, error) {
+	b, kind, name, err := resolveContainerBackend(ctx, runner, errW, lock, cacheDir, aws)
 	if err == nil {
 		return b, kind, name, nil
 	}
@@ -164,5 +166,5 @@ func resolveAutoBackend(ctx context.Context, runner backend.Runner, errW io.Writ
 
 	fmt.Fprintf(errW, "no usable container runtime (%s) — falling back to the process backend using host runtimes\n", err)
 
-	return resolveProcessBackend(ctx, runner, errW, lock, cacheDir)
+	return resolveProcessBackend(ctx, runner, errW, lock, cacheDir, aws)
 }

@@ -81,6 +81,9 @@ const defaultReadyTimeout = 15 * time.Second
 // SIGKILL, per plans/m3-process-path.md Unit B.
 const stopGrace = 5 * time.Second
 
+// loopbackHost is where a host process reaches Lambdary's dev server.
+const loopbackHost = "127.0.0.1"
+
 // processBackend is the backend.Backend implementation returned by New.
 // readyTimeout and home are unexported and default (to defaultReadyTimeout
 // and the resolved $LAMBDARY_HOME) when zero/empty; tests in this package
@@ -97,6 +100,17 @@ type processBackend struct {
 	// search-path env vars at `<cacheDir>/staging/<fn>/` — see layerenv.go
 	// and plans/layers.md's Unit D.
 	cacheDir string
+
+	// aws is the AWS environment injected into every function; its zero
+	// value injects nothing.
+	aws backend.AWS
+}
+
+// NewWithAWS is New for a backend that also injects aws into every
+// function's environment, pointing AWS_ENDPOINT_URL at the dev server on
+// loopback, which a host process shares with it.
+func NewWithAWS(riePath string, runner backend.Runner, cacheDir string, aws backend.AWS) backend.Backend {
+	return &processBackend{riePath: riePath, runner: runner, cacheDir: cacheDir, aws: aws}
 }
 
 // New returns a backend.Backend that runs functions by spawning riePath
@@ -189,6 +203,8 @@ func (b *processBackend) Start(ctx context.Context, fn discovery.Function) (back
 	if err != nil {
 		return nil, fmt.Errorf("process: %s: %w", fn.Name, err)
 	}
+
+	fileEnv = b.aws.UnderEnv(fileEnv, loopbackHost)
 
 	layerRefs, err := parseFunctionLayerRefs(fn)
 	if err != nil {

@@ -137,7 +137,7 @@ func runInvoke(ctx context.Context, out, errOut io.Writer, stdin io.Reader, root
 	// credentials they might require) just to run this one.
 	ensureLayersFetched(ctx, []discovery.Function{fn}, cacheDir, lock, errOut)
 
-	return invokeStandalone(ctx, out, errOut, fn, event, backendFlag, lock, cacheDir)
+	return invokeStandalone(ctx, out, errOut, fn, event, backendFlag, lock, cacheDir, awsFor(cfg, 0, ""))
 }
 
 // resolveEvent reads the invoke payload from source: a JSON file path,
@@ -293,15 +293,15 @@ func effectiveInvokeBackendMode(fn discovery.Function, backendFlag string) strin
 // has no cross-call cache to dedupe against (it runs once and exits), so
 // the notice is unconditional here, unlike perFunctionBackend's
 // once-per-function guard.
-func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.Function, event []byte, backendFlag string, lock *lockfile.Lock, cacheDir string) error {
-	b, kind, _, err := resolveBackend(ctx, effectiveInvokeBackendMode(fn, backendFlag), backend.ExecRunner{}, errOut, lock, cacheDir)
+func invokeStandalone(ctx context.Context, out, errOut io.Writer, fn discovery.Function, event []byte, backendFlag string, lock *lockfile.Lock, cacheDir string, aws backend.AWS) error {
+	b, kind, _, err := resolveBackend(ctx, effectiveInvokeBackendMode(fn, backendFlag), backend.ExecRunner{}, errOut, lock, cacheDir, aws)
 	if err != nil {
 		return err
 	}
 
 	if needsContainerFallback(kind, fn) {
 		b, err = fallbackToContainerBackend(ctx, fn, func(ctx context.Context) (backend.Backend, error) {
-			containerBackend, _, _, err := resolveContainerBackend(ctx, backend.ExecRunner{}, lock, cacheDir)
+			containerBackend, _, _, err := resolveContainerBackend(ctx, backend.ExecRunner{}, errOut, lock, cacheDir, aws)
 			return containerBackend, err
 		}, func() {
 			fmt.Fprint(errOut, containerFallbackNotice(fn))

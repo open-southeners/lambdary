@@ -28,6 +28,8 @@ Unknown keys are rejected, so typos surface immediately. Unlike a function's `.l
 | `build.go.tags` | none | Extra Go build tags, added after `lambda.norpc`. |
 | `build.go.ldflags` | none | Passed to `go build -ldflags` as is. |
 | `queues` | none | Local SQS queues to create at startup. |
+| `aws.environment` | `false` | Give every function the AWS variables it needs to call Lambdary. See [`aws`](#aws). |
+| `aws.region` | `us-east-1` | Region reported to functions. Lowercase letters, digits and hyphens, such as `eu-south-2`. |
 
 ## `defaults`
 
@@ -74,6 +76,18 @@ See [Go Functions](../guides/go-functions.md) for how builds and reloads work.
 | `build.go.ldflags` | none | Passed to `go build -ldflags` as is. |
 
 These apply to every Go function: `go:` entries and scanned `provided.*` directories with a `go.mod`.
+
+## `aws`
+
+```yaml
+aws:
+  environment: true       # default false: functions get no extra variables
+  region: eu-south-2      # default us-east-1
+```
+
+With `aws.environment: true`, every function gets the region, placeholder credentials and an endpoint pointing at the dev server, so an AWS SDK or the AWS CLI inside it calls Lambdary with no setup. A variable the function's own `environment` or `local.env_file` sets is never replaced. Off by default, functions get exactly what they did before.
+
+The variables are listed in [Environment Variables](environment-variables.md#aws-variables-injected-with-awsenvironment). Changes to `aws` apply on the next start of `lambdary dev`, not on hot reload. See [Using AWS SDKs and the CLI](../guides/using-aws-sdks.md#from-inside-a-function).
 
 ## `queues`
 
